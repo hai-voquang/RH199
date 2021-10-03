@@ -65,10 +65,12 @@ lrwxrwxrwx. 1 student student  4 Mar  5 22:04 /home/student/tempdir -> /tmp
 
 4. Exit from servera.
 
+```
 [student@servera ~]$ exit
 logout
 Connection to servera closed.
 [student@workstation ~]$
+```
 
 ## Finish
 
