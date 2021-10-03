@@ -1,3 +1,5 @@
+# Guided Exercise 1.2: Getting Help from Red Hat Customer Portal
+
 1. From workstation use the ssh command to log into servera as the student user.
 
 ```
