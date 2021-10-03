@@ -169,11 +169,6 @@ PASS_WARN_AGE   7
 ...output omitted...
 ```
 
-[^1]
-IMPORTANT
-The default password and account expiry settings will be effective for new users but not for existing users.
-[^1]
-
 7.2. Log off from servera.
 
 ```
