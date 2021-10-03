@@ -1,4 +1,4 @@
-# RH199
+# Guided Exercise 1.1: Configuring SSH Key-based Authentication
 
 1. From workstation, open an SSH session to serverb as student.
 
