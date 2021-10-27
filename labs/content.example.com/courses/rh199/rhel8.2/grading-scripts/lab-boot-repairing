@@ -1,0 +1,88 @@
+#!/bin/bash
+#
+# Copyright 2014, 2019, 2020 Red Hat, Inc.
+#
+# NAME
+#     lab-boot-repairing - grading script for RH134 Repairing File System
+#                          Issues at Boot guided exercise
+#
+# SYNOPSIS
+#     lab-boot-repairing {start|finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start or finish for
+#     the Repairing File System Issues at Boot guided exercise.
+#
+# CHANGELOG
+#   * Tue Aug 25 2020 Herve Quatremain <hquatrem@redhat.com>
+#   - fixing UEFI boot issues
+#   * Wed Mar 27 2019 Herve Quatremain <hquatrem@redhat.com>
+#   - updated for RHEL 8
+#   - renamed script from lab-bootbreakfs
+#   * Thu Jun 12 2014 Wander Boessenkool <wboessen@redhat.com>
+#   - original code
+#   * Thu May  8 2014 Wander Boessenkool <wboessen@redhat.com>
+#   - fixed to run with wrapper
+
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='servera'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start finish)
+
+
+function lab_start {
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} for lab exercise work:"
+  print_line
+  host_reachable ${target}
+
+  rhel_backup ${target} /boot/efi/EFI/redhat/grub.cfg /boot/efi/EFI/redhat/grubenv /etc/default/grub /boot/grub2/grub.cfg /boot/grub2/grubenv /boot/loader /etc/fstab
+
+  pad " · Updating GRUB2 countdown on ${target}"
+  ${ssh} ${target} "sed -i -e 's/GRUB_TIMEOUT=.*/GRUB_TIMEOUT=20/' -e '/GRUB_CMDLINE_LINUX=/s/console=[^ ]*//g' /etc/default/grub"
+  print_SUCCESS
+
+  rhel_grub2_mkconfig ${target}
+
+  pad " · Breaking the boot process on ${target}"
+  ${ssh} ${target} "(echo; echo '/dev/sdz1   /RemoveMe   xfs   defaults   0 0') >> /etc/fstab"
+  print_SUCCESS
+
+  pad " · Rebooting ${target}"
+  ${ssh} ${target} "systemctl reboot"
+  print_SUCCESS
+
+  print_line
+}
+
+
+function lab_finish {
+
+  print_header "Cleaning up the lab on ${target}:"
+  host_reachable ${target}
+
+  rhel_restore ${target}
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

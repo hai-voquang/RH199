@@ -1,0 +1,212 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-ssh-configure - grading script for RH124 Customizing OpenSSH Service Configuration
+#
+# SYNOPSIS
+#     lab-ssh-configure {start|finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start
+#     or finish for the particular lab of awesomeness.
+#
+# CHANGELOG
+#   * Thu Feb 07 2019 Saumik Paul <saumik@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+targeta='servera'
+targetb='serverb'
+#known_hosts=/home/student/.ssh/known_hosts
+sshd_config=/etc/ssh/sshd_config
+#ge_user1='operator1'
+ge_user2='operator2'
+ge_user3='operator3'
+ge_user_pw='redhat'
+passwd='/etc/passwd'
+shadow='/etc/shadow'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start finish)
+
+
+function lab_start {
+
+  reqd_package='openssh-server openssh-clients'        # Just an example
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${targeta} and ${targetb} for lab exercise work:"
+  print_line
+  host_reachable ${targeta} ${targetb}
+
+
+  # Check for lab prerequisites (perhaps a required package?).
+  if ! ${ssh} ${targeta} "rpm -q --quiet ${reqd_package}"
+  then
+    pad " · Error - ${reqd_package} is not installed on ${targeta}"
+    print_FAIL
+  elif ! ${ssh} ${targetb} "rpm -q --quiet ${reqd_package}"
+  then
+    pad " · Error - ${reqd_package} is not installed on ${targetb}"
+  else
+    pad " · Creating ${ge_user2} and ${ge_user3} on ${targeta}"
+    if ${ssh} ${targeta} "grep -e ${ge_user2} -e ${ge_user3} ${passwd} ${shadow}"
+    then
+      ${ssh} ${targeta} "userdel -r ${ge_user2}; userdel -r ${ge_user3}"
+      if ${ssh} ${targeta} "useradd ${ge_user2} && useradd ${ge_user3}" &&
+	 ${ssh} ${targeta} "echo redhat | passwd --stdin ${ge_user2}" &&
+	 ${ssh} ${targeta} "echo redhat | passwd --stdin ${ge_user3}"
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    else
+      if ${ssh} ${targeta} "useradd ${ge_user2} && useradd ${ge_user3}" &&
+         ${ssh} ${targeta} "echo redhat | passwd --stdin ${ge_user2}" &&
+         ${ssh} ${targeta} "echo redhat | passwd --stdin ${ge_user3}"
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    fi
+
+    pad " · Creating ${ge_user2} and ${ge_user3} on ${targetb}"
+    if ${ssh} ${targetb} "grep -e ${ge_user2} -e ${ge_user3} ${passwd} ${shadow}"
+    then
+      ${ssh} ${targetb} "userdel -r ${ge_user2}; userdel -r ${ge_user3}"
+      if ${ssh} ${targetb} "useradd ${ge_user2} && useradd ${ge_user3}" &&
+	 ${ssh} ${targetb} "echo redhat | passwd --stdin ${ge_user2}" &&
+	 ${ssh} ${targetb} "echo redhat | passwd --stdin ${ge_user3}"
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    else
+      if ${ssh} ${targetb} "useradd ${ge_user2} && useradd ${ge_user3}" &&
+         ${ssh} ${targetb} "echo redhat | passwd --stdin ${ge_user2}" &&
+         ${ssh} ${targetb} "echo redhat | passwd --stdin ${ge_user3}"
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    fi
+
+    pad " · Ensuring a clean temporary files' directory on ${targeta}"
+    if ${ssh} ${targeta} "rm -f /tmp/{md5sum_ssh_config.txt,sshd_config.orig}" &&
+       ! ${ssh} ${targeta} "test -e /tmp/md5sum_ssh_config.txt" &&
+       ! ${ssh} ${targeta} "test -e /tmp/sshd_config.orig"
+    then
+      print_SUCCESS
+    else
+      if ! ${ssh} ${targeta} "test -e /tmp/md5sum_ssh_config.txt" &&
+         ! ${ssh} ${targeta} "test -e /tmp/sshd_config.orig"
+      then
+        print_SUCCESS
+      else
+        print_FAIL
+      fi
+    fi
+
+    pad " · Backing up ${sshd_config} on ${targeta}"
+    if ${ssh} ${targeta} "cp -f ${sshd_config} /tmp/sshd_config.orig" &&
+       ${ssh} ${targeta} "test -e /tmp/sshd_config.orig"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Recording the md5sum of ${sshd_config} on ${targeta}"
+    md5sum_sshd_config=$(${ssh} ${targeta} "md5sum /etc/ssh/sshd_config | cut -d\  -f1")
+    ${ssh} ${targeta} "echo ${md5sum_sshd_config} > /tmp/md5sum_ssh_config.txt"
+    md5sum_ssh_config_txt=$(${ssh} ${targeta} "cat /tmp/md5sum_ssh_config.txt")
+    if ${ssh} ${targeta} "test -s /tmp/md5sum_ssh_config.txt" && 
+       [ "${md5sum_ssh_config_txt}" == "${md5sum_sshd_config}" ]
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    print_line
+  fi
+}
+
+function lab_finish {
+
+  print_header "Completing the lab on ${targeta} and ${targetb}:"
+  host_reachable ${targeta} ${targetb}
+
+  pad " · Deleting ${ge_user2} and ${ge_user3} from ${targeta}"
+  ${ssh} ${targeta} "pkill --signal SIGKILL -u ${ge_user2}; pkill --signal SIGKILL -u ${ge_user3}"
+  ${ssh} ${targeta} "userdel -r ${ge_user2}"
+  ${ssh} ${targeta} "userdel -r ${ge_user3}"
+  if ! ${ssh} ${targeta} "grep ${ge_user2} ${passwd} ${shadow}" &&
+     ! ${ssh} ${targeta} "grep ${ge_user3} ${passwd} ${shadow}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi    
+
+  pad " · Deleting ${ge_user2} and ${ge_user3} from ${targetb}"
+  ${ssh} ${targetb} "pkill --signal SIGKILL -u ${ge_user2}; pkill --signal SIGKILL -u ${ge_user3}"
+  ${ssh} ${targetb} "userdel -r ${ge_user2}"
+  ${ssh} ${targetb} "userdel -r ${ge_user3}"
+  if ! ${ssh} ${targetb} "grep ${ge_user2} ${passwd} ${shadow}" &&
+     ! ${ssh} ${targetb} "grep ${ge_user3} ${passwd} ${shadow}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi    
+
+  pad " · Restoring original ${sshd_config} on ${targeta}"
+  ${ssh} -t -o PasswordAuthentication=no -o PubkeyAuthentication=yes -o StrictHostKeyChecking=no  student@${targeta} "echo student | sudo -S cp -f /tmp/sshd_config.orig /etc/ssh/sshd_config"
+  if ${ssh} -t -o PasswordAuthentication=no -o PubkeyAuthentication=yes -o StrictHostKeyChecking=no  student@${targeta} "echo student | sudo -S grep '^PermitRootLogin yes$' /etc/ssh/sshd_config" &&
+     ${ssh} -t -o PasswordAuthentication=no -o PubkeyAuthentication=yes -o StrictHostKeyChecking=no  student@${targeta} "echo student | sudo -S grep '^PasswordAuthentication yes$' /etc/ssh/sshd_config" &&
+     ${ssh} -t -o PasswordAuthentication=no -o PubkeyAuthentication=yes -o StrictHostKeyChecking=no  student@${targeta} "echo student | sudo -S grep '^#PubkeyAuthentication yes$' /etc/ssh/sshd_config" &&
+     ${ssh} -t -o PasswordAuthentication=no -o PubkeyAuthentication=yes -o StrictHostKeyChecking=no  student@${targeta} "echo student | sudo -S systemctl reload sshd.service"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+
+  #pad " · Verifying the original ${sshd_config} on ${targeta}"
+  #md5sum_sshd_config=$(${ssh} ${targeta} "md5sum /etc/ssh/sshd_config | cut -d\  -f1")
+  #md5sum_ssh_config_txt=$(${ssh} ${targeta} "cat /tmp/md5sum_ssh_config.txt")
+  #if [ "${md5sum_ssh_config_txt}" == "${md5sum_sshd_config}" ]
+  #then
+  #  print_SUCCESS
+  #else
+  #  print_FAIL
+  #fi
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

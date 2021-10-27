@@ -1,0 +1,86 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-archive-sync - grading script for RH124 Guided Exercise
+#                        Synchronizing Files Between Systems Securely
+#
+# SYNOPSIS
+#     lab-archive-sync {start|finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start,
+#     or finish for the Synchronizing Files Between Systems Securely
+#     Guided Exercise.
+#
+# CHANGELOG
+#   * Wed Feb 11 2019 Snehangshu Karmakar <snehk@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='servera'
+serverb='serverb'
+
+dirname="/home/student/serverlogs"
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start finish)
+
+function lab_start {
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} for lab exercise work:"
+  print_line
+
+  pad " · Verifying server is reachable: ${target}"
+  host_reachable ${target}
+  print_SUCCESS
+
+  pad " · Verifying server is reachable: ${serverb}"
+  host_reachable ${serverb}
+  print_SUCCESS
+
+  pad " · Ensuring directory does not exit: ${dirname}"
+  if ${ssh} ${target} [[ ! -d ${dirname} ]]; then
+    print_SUCCESS
+  else
+    ${ssh} ${target} "rm -rf ${dirname}"
+    print_SUCCESS
+  fi
+
+  print_line
+}
+
+function lab_finish {
+
+  print_header "You have completed attempting the guided exercise."
+  host_reachable ${target}
+
+  pad " · Deleting directory created"
+  if ${ssh} ${target} [[ ! -d ${dirname} ]]; then
+    print_SUCCESS
+  else
+    ${ssh} ${target} "rm -rf ${dirname}"
+    print_SUCCESS
+  fi
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

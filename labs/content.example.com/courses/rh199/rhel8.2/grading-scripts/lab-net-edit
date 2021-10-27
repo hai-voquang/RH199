@@ -1,0 +1,93 @@
+#!/bin/bash
+#
+# Copyright 2019, 2020 Red Hat, Inc.
+#
+# NAME
+#     lab-net-edit - grading script for RH124 Guided Exercise - Editing
+#                    Network Configuration Files
+#
+# SYNOPSIS
+#     lab-net-edit {start|finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start or
+#     finish for the Editing Network Configuration Files guided exercise.
+#
+# CHANGELOG
+#   * Mon Sep 21 2020 Herve Quatremain <hquatrem@redhat.com>
+#   - Fixing backup of the network configuration files - Jira RH124-581
+#   * Tue Apr 16 2019 Saumik Paul <saumik@redhat.com>
+#   - modified code
+#   * Thu Feb 11 2019 Victor Costea <vcostea@redhat.com>
+#   - original code
+
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='servera'
+targetb='serverb'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start finish)
+
+
+function lab_start {
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} and ${targetb} for lab exercise work:"
+  print_line
+  host_reachable ${target} ${targetb}
+
+  rhel_backup ${target} /etc/sysconfig/network-scripts
+  rhel_backup ${targetb} /etc/sysconfig/network-scripts
+
+  print_line
+}
+
+
+function lab_finish {
+
+
+  print_header "Cleaning up the lab on ${target} and ${targetb}:"
+  host_reachable ${target} ${targetb}
+
+  rhel_restore ${target}
+  rhel_restore ${targetb}
+
+  pad " · Restarting network on ${target}"
+  default_nic_servera=$(get_nicname ${target} 1)
+  default_nic_hwaddr_servera=$(${ssh} ${target} "cat /sys/class/net/${default_nic_servera}/address")
+  default_ifcfg_file_servera=$(${ssh} ${target} "grep -i -H -e ${default_nic_hwaddr_servera} -e ${default_nic_servera} /etc/sysconfig/network-scripts/*" | grep -v static | cut -d: -f1 | grep -v backup)
+  default_con_profile_servera=$(${ssh} ${target} "grep -i name ${default_ifcfg_file_servera}" | awk -F"=" '{ print $2 }')
+  ${ssh} ${target} "nmcli con reload"
+  ${ssh} ${target} "nmcli con up ${default_con_profile_servera}"
+  print_SUCCESS
+
+  pad " · Restarting network on ${targetb}"
+  default_nic_serverb=$(get_nicname ${targetb} 1)
+  default_nic_hwaddr_serverb=$(${ssh} ${targetb} "cat /sys/class/net/${default_nic_serverb}/address")
+  default_ifcfg_file_serverb=$(${ssh} ${targetb} "grep -i -H -e ${default_nic_hwaddr_serverb} -e ${default_nic_serverb} /etc/sysconfig/network-scripts/*" | grep -v static | cut -d: -f1 | grep -v backup)
+  default_con_profile_serverb=$(${ssh} ${targetb} "grep -i name ${default_ifcfg_file_serverb}" | awk -F"=" '{ print $2 }')
+  ${ssh} ${targetb} "nmcli con reload"
+  ${ssh} ${targetb} "nmcli con up ${default_con_profile_serverb}"
+  print_SUCCESS
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

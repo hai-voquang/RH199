@@ -1,0 +1,90 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-net-hostnames - grading script for RH124 Guided Exercise
+#                         Configuring Host Names and Name Resolution
+#
+# SYNOPSIS
+#     lab-net-hostnames {start|finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start or
+#     finish for the Configuring Host Names and Name Resolution guided 
+#     exercise.
+#
+# CHANGELOG
+#   * Thu Feb 12 2019 Victor Costea <vcostea@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='servera'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start finish)
+
+
+function lab_start {
+
+  cmd_backup_hostname="mv /etc/hostname{,.backup}"
+  cmd_backup_hosts="cp /etc/hosts{,.backup}"
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} for lab exercise work:"
+  print_line
+  pad " · Check ${target} connectivity"
+  host_reachable ${target}
+  print_SUCCESS
+
+  pad " · Check ${target} hostname file"
+  ${ssh} ${target} ${cmd_backup_hostname}
+  print_SUCCESS
+
+  pad " · Check ${target} hosts file"
+  ${ssh} ${target} ${cmd_backup_hosts}
+  print_SUCCESS
+
+  print_line
+}
+
+
+function lab_finish {
+
+  print_header "Cleaning up the lab on ${target}:"
+
+  cmd_restore_hostname="mv /etc/hostname{.backup,}"
+  cmd_restore_hosts="mv /etc/hosts{.backup,}"
+
+  pad " · Check ${target}"
+  host_reachable ${target}
+  print_SUCCESS
+
+  pad " · Check ${target} hostname file"
+  ${ssh} ${target} ${cmd_restore_hostname}
+  print_SUCCESS
+
+  pad " · Check ${target} hosts file"
+  ${ssh} ${target} ${cmd_restore_hosts}
+  print_SUCCESS
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

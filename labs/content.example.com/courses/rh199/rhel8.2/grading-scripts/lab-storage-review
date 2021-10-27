@@ -1,0 +1,301 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-storage-review - grading script for RH134 Managing Basic Storage lab
+#
+# SYNOPSIS
+#     lab-storage-review {start|grade|finish}
+#
+#        start   - prepare the system for starting the lab
+#        grade   - perform evaluation steps on the system
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start, grading, or
+#     finish for the Managing Basic Storage lab.
+#
+# CHANGELOG
+#   * Fri Mar 22 2019 Herve Quatremain <hquatrem@redhat.com>
+#   - original code
+
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='serverb'
+second_disk_device='vdb'
+
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start grade finish)
+
+
+function lab_start {
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} for lab exercise work:"
+  print_line
+  host_reachable ${target}
+
+  pad " · Preparing the second disk on ${target}"
+  for i in {5..1}
+  do
+    if ${ssh} ${target} "test -b /dev/${second_disk_device}$i"
+    then
+      ${ssh} ${target} "umount -l /dev/${second_disk_device}$i"
+      ${ssh} ${target} "swapoff /dev/${second_disk_device}$i"
+      ${ssh} ${target} "dd if=/dev/zero of=/dev/${second_disk_device}$i bs=512 count=10"
+      ${ssh} ${target} "parted --script /dev/${second_disk_device} rm $i"
+    fi
+  done
+  ${ssh} ${target} "sed -i -e '/\/archive/d' -e '/\/backup/d' /etc/fstab"
+  ${ssh} ${target} "rmdir /archive /backup"
+  ${ssh} ${target} "wipefs --all --force /dev/${second_disk_device}"
+  ${ssh} ${target} "test -b /dev/${second_disk_device} && dd if=/dev/zero of=/dev/${second_disk_device} bs=1024 count=2048"
+  print_SUCCESS
+
+  pad " · Saving /etc/fstab on ${target}"
+  ${ssh} ${target} "test -f /var/tmp/fstab.ch06s05.LAB || cp /etc/fstab /var/tmp/fstab.ch06s05.LAB"
+  print_SUCCESS
+
+  print_line
+}
+
+
+function lab_grade {
+
+  print_header "Grading the student's work on ${target}:"
+  host_reachable ${target}
+
+
+  pad " · ${second_disk_device} uses the GTP partitioning scheme"
+  TMP_OUT="$(mktemp)"
+  ${ssh} ${target} "parted --script /dev/${second_disk_device} print" > "${TMP_OUT}"
+  if grep -q gpt "${TMP_OUT}"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · The XFS backup partition exists on ${second_disk_device}"
+  if grep -Eqi "[[:space:]]+backup" "${TMP_OUT}"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad ' · The backup partition size is 2 GB (1.8 to 2.2 GB)'
+  SIZE=$(grep -Ei "[[:space:]]+backup" "${TMP_OUT}" | awk '{print $4}' | tr -cd '[0-9]')
+  if [ -z "${SIZE}" ]
+  then
+    SIZE=0
+  fi
+  if [ "${SIZE}" -ge 1800 -a "${SIZE}" -le 2200 ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad ' · The XFS file system exists on the backup partition'
+  PARTNUM=$(grep -Ei "[[:space:]]+backup" "${TMP_OUT}" | awk '{ print $1}')
+  TMP_OUT2="$(mktemp)"
+  ${ssh} ${target} "lsblk --fs --noheadings /dev/${second_disk_device}${PARTNUM:=0}" > "${TMP_OUT2}"
+  if grep -q xfs "${TMP_OUT2}"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad ' · The XFS file system is mounted at /backup'
+  if grep -qi /backup "${TMP_OUT2}"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad ' · The XFS file system is defined in /etc/fstab'
+  UUID=$(awk '{print $3}' "${TMP_OUT2}")
+  TMP_FSTAB="$(mktemp)"
+  ${ssh} ${target} "cat /etc/fstab" > "${TMP_FSTAB}"
+  if grep -Eqi "UUID=.*${UUID:=XX}\"?[[:space:]]+/backup[[:space:]]+xfs[[:space:]]+defaults" "${TMP_FSTAB}"
+  then
+    print_PASS
+  elif grep -Eqi "/dev/${second_disk_device}${PARTNUM}[[:space:]]+/backup[[:space:]]+xfs[[:space:]]+defaults" "${TMP_FSTAB}"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · The swap1 partition exists on ${second_disk_device}"
+  SIZE=$(grep -Ei "[[:space:]]swap1" "${TMP_OUT}" | awk '{print $4}' | tr -cd '[0-9]')
+  if [ -n "${SIZE}" ]
+  then
+    print_PASS
+  else
+    print_FAIL
+    SIZE=0
+  fi
+
+  pad ' · The swap1 partition size is 512 MB (460 to 564 MB)'
+  if [ "${SIZE}" -ge 460 -a "${SIZE}" -le 564 ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · The swap2 partition exists on ${second_disk_device}"
+  SIZE=$(grep -Ei "[[:space:]]swap2" "${TMP_OUT}" | awk '{print $4}' | tr -cd '[0-9]')
+  if [ -n "${SIZE}" ]
+  then
+    print_PASS
+  else
+    print_FAIL
+    SIZE=0
+  fi
+
+  pad ' · The swap2 partition size is 512 MB (460 to 564 MB)'
+  if [ "${SIZE}" -ge 460 -a "${SIZE}" -le 564 ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad ' · The swap1 partition is initialized as swap'
+  PARTNUM=$(grep -Ei "linux-swap.*[[:space:]]swap1" "${TMP_OUT}" | awk '{print $1}')
+  ${ssh} ${target} "lsblk --fs --noheadings /dev/${second_disk_device}${PARTNUM:=0}" > "${TMP_OUT2}"
+  if grep -q swap "${TMP_OUT2}"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad ' · The swap1 swap space is activated'
+  if grep -qF '[SWAP]' "${TMP_OUT2}"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad ' · The swap1 swap space is defined in /etc/fstab'
+  UUID=$(awk '{print $3}' "${TMP_OUT2}")
+  if grep -Eqi "UUID=.*${UUID:=XX}\"?[[:space:]]+[[:alnum:]]+[[:space:]]+swap" "${TMP_FSTAB}"
+  then
+    print_PASS
+  elif grep -Eqi "/dev/${second_disk_device}${PARTNUM}[[:space:]]+[[:alnum:]]+[[:space:]]+swap" "${TMP_FSTAB}"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  PRI_SWAP1=$(${ssh} ${target} "swapon --show=NAME,PRIO --noheadings" | grep /dev/${second_disk_device}${PARTNUM} | awk '{print $2}')
+
+
+  pad ' · The swap2 partition is initialized as swap'
+  PARTNUM=$(grep -Ei "linux-swap.*[[:space:]]swap2" "${TMP_OUT}" | awk '{print $1}')
+  ${ssh} ${target} "lsblk --fs --noheadings /dev/${second_disk_device}${PARTNUM:=0}" > "${TMP_OUT2}"
+  if grep -q swap "${TMP_OUT2}"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad ' · The swap2 swap space is activated'
+  if grep -qF '[SWAP]' "${TMP_OUT2}"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad ' · The swap2 swap space is defined in /etc/fstab'
+  UUID=$(awk '{print $3}' "${TMP_OUT2}")
+  if grep -Eqi "UUID=.*${UUID:=XX}\"?[[:space:]]+[[:alnum:]]+[[:space:]]+swap" "${TMP_FSTAB}"
+  then
+    print_PASS
+  elif grep -Eqi "/dev/${second_disk_device}${PARTNUM}[[:space:]]+[[:alnum:]]+[[:space:]]+swap" "${TMP_FSTAB}"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  PRI_SWAP2=$(${ssh} ${target} "swapon --show=NAME,PRIO --noheadings" | grep /dev/${second_disk_device}${PARTNUM} | awk '{print $2}')
+
+  pad ' · The swap2 swap space is preferred over swap1'
+  if [ ${PRI_SWAP2:=0} -gt ${PRI_SWAP1:=0} ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  rm -f "${TMP_OUT}" "${TMP_OUT2}" "${TMP_FSTAB}"
+
+  # Overall grade
+  print_line
+  pad 'Overall lab grade'
+  if [[ ${fail_count} -eq 0 ]]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  print_line
+}
+
+
+function lab_finish {
+
+  print_header "Completing the lab on ${target}:"
+  host_reachable ${target}
+
+  pad " · Cleaning up the second disk on ${target}"
+  for i in {5..1}
+  do
+    if ${ssh} ${target} "test -b /dev/${second_disk_device}$i"
+    then
+      ${ssh} ${target} "umount -l /dev/${second_disk_device}$i"
+      ${ssh} ${target} "swapoff /dev/${second_disk_device}$i"
+      ${ssh} ${target} "dd if=/dev/zero of=/dev/${second_disk_device}$i bs=512 count=10"
+      ${ssh} ${target} "parted --script /dev/${second_disk_device} rm $i"
+    fi
+  done
+  ${ssh} ${target} "rmdir /archive /backup"
+  ${ssh} ${target} "wipefs --all --force /dev/${second_disk_device}"
+  ${ssh} ${target} "test -b /dev/${second_disk_device} && dd if=/dev/zero of=/dev/${second_disk_device} bs=1024 count=2048"
+  print_SUCCESS
+
+  pad " · Restoring /etc/fstab on ${target}"
+  ${ssh} ${target} "cp /var/tmp/fstab.ch06s05.LAB /etc/fstab && rm -f /var/tmp/fstab.ch06s05.LAB"
+  print_SUCCESS
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

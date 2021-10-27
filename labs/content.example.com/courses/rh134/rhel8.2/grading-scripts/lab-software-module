@@ -1,0 +1,175 @@
+#!/bin/bash
+#
+# Copyright 2019, 2020 Red Hat, Inc.
+#
+# NAME
+#     lab-software-module - Start script for Managing Package
+#                           Module Streams guided exercise
+#
+# SYNOPSIS
+#     lab-software-yum {start|finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab cleanup
+# DESCRIPTION
+#     This script verifies servera is accessible, yum is installed,
+#     install or remove any lab artifacts.
+#
+# CHANGELOG
+#   * Thu Aug 27 2020 Herve Quatremain <hquatrem@redhat.com>
+#   - updating to RHEL 8.2
+#   * Wed Mar 06 2019 Snehangshu Karmakar <snehk@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='servera'
+
+reqd_package='yum'
+
+repo1="rhel-8.2-for-x86_64-baseos-rpms"
+repo2="rhel-8.2-for-x86_64-appstream-rpms"
+modulename1="postgresql"
+modulestream1_1="9.6"
+modulestream1_2="10"
+modulename2="python36"
+modulestream2_1="3.6"
+content_rhel_ver='rhel8.2'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start finish)
+
+
+function lab_start {
+
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} for lab exercise work:"
+  print_line
+  # Check that target host is reachable.
+  pad " · Verifying server is reachable: ${target}"
+  host_reachable ${target}
+  print_SUCCESS
+
+
+  pad " · Ensuring software repo exists"
+  if ${ssh} ${target} "yum repolist --enabled" | grep ${repo1} &&
+    ${ssh} ${target} "yum repolist --enabled" | grep ${repo2}; then
+    print_SUCCESS
+  else
+    cmd1='rm -f /etc/yum.repos.d/*.repo'
+    cmd2="cat <<-EOF > /etc/yum.repos.d/rhel_dvd.repo
+[rhel-8.2-for-x86_64-baseos-rpms]
+baseurl = http://content.example.com/${content_rhel_ver}/x86_64/dvd/BaseOS
+enabled = true
+gpgcheck = false
+name = Red Hat Enterprise Linux 8.2 BaseOS (dvd)
+[rhel-8.2-for-x86_64-appstream-rpms]
+baseurl = http://content.example.com/${content_rhel_ver}/x86_64/dvd/AppStream
+enabled = true
+gpgcheck = false
+name = Red Hat Enterprise Linux 8.2 AppStream (dvd)
+EOF"
+    cmd3='cat <<EOF > /etc/yum.repos.d/redhat.repo
+#
+# Certificate-Based Repositories
+# Managed by (rhsm) subscription-manager
+#
+# *** This file is auto-generated.  Changes made here will be over-written. ***
+# *** Use "subscription-manager repo-override --help" if you wish to make changes. ***
+#
+# If this file is empty and this system is subscribed consider
+# a "yum repolist" to refresh available repos
+#
+EOF'
+
+    ${ssh} ${target} "${cmd1}"
+    ${ssh} ${target} "${cmd2}"
+    ${ssh} ${target} "${cmd3}"
+    print_SUCCESS
+  fi
+
+  # Check that required package(s) is/are installed.
+  pad " · Ensuring package is installed: ${reqd_package}"
+  if  ${ssh} ${target} "rpm -q --quiet ${reqd_package}"; then
+    print_SUCCESS
+  elif  ${ssh} ${target} "yum -y install ${reqd_package}"; then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Ensuring module is installed: ${modulename1}:${modulestream1_1}"
+  if  ${ssh} ${target} "yum module list --installed | grep ${modulename1_1}"; then
+    print_SUCCESS
+  elif  ${ssh} ${target} "yum -y install @${modulename1}:${modulestream1_1}"; then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Ensuring module does not exists: ${modulename2}:${modulestream2_1}"
+  if ! ${ssh} ${target} "yum module list --installed | grep ${modulename2_1}"; then
+    print_SUCCESS
+  elif ${ssh} ${target} "yum -y remove @${modulename2}:${modulestream2_1}"; then
+    ${ssh} ${target} "yum -y module reset @${modulename2}:${modulestream2_1}"
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+  print_line
+
+}
+
+function lab_finish {
+
+  print_header "You have completed attempting the guided exercise."
+
+  pad " · Verifying the server is reachable:  $(target)."
+  host_reachable ${target}
+  print_SUCCESS
+
+  pad " · Removing module: ${modulename1}:${modulestream1_1}"
+  if  ! ${ssh} ${target} "yum module list --installed | grep ${modulename1}"; then
+    print_SUCCESS
+  elif  ${ssh} ${target} "yum -y remove @${modulename1}:${modulestream1_1}"; then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Removing module: ${modulename1}:${modulestream1_2}"
+  if !  ${ssh} ${target} "yum module list --installed | grep ${modulename1}"; then
+    print_SUCCESS
+  elif  ${ssh} ${target} "yum -y remove @${modulename1}:${modulestream1_2}"; then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Removing module: ${modulename2}:${modulestream2_1}"
+  if !  ${ssh} ${target} "yum module list --installed | grep ${modulename2}"; then
+    print_SUCCESS
+  elif  ${ssh} ${target} "yum -y remove @${modulename2}:${modulestream2_1}"; then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

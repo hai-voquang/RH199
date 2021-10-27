@@ -1,0 +1,317 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-rhcsa-rh124-review5 - grading script for RH124 Comprehensive Review
+#     Mounting Filesystems and Finding Files
+#
+# SYNOPSIS
+#     lab-compreview-5 {start|grade|finish}
+#
+#        start   - prepare the system for starting the lab
+#	 grade   - perform evaluation steps on the system 
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start
+#     or finish for the Comprehensive Review Mounting Filesystems and Finding Files.
+#
+# CHANGELOG
+#   * Mon Mar 04 2019 Saumik Paul <saumik@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+#targeta='servera'
+targetb='serverb'
+comp_review5_user='contractor1'
+comp_review5_group='contractor'
+comp_review5_file1='/var/tmp/review5-path'
+comp_review5_file2='/usr/share/review5-perms'
+comp_review5_file3='/opt/review5-size'
+comp_review5_disk='/review5-disk'
+comp_review5_txt1="${comp_review5_disk}/review5-path.txt"
+comp_review5_txt2="${comp_review5_disk}/review5-perms.txt"
+comp_review5_txt3="${comp_review5_disk}/review5-size.txt"
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start grade finish)
+
+
+function lab_start {
+
+  reqd_package='parted util-linux'        # Just an example
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${targetb} for lab exercise work:"
+  print_line
+  host_reachable ${targetb}
+
+
+  # Check for lab prerequisites (perhaps a required package?).
+  if ! ${ssh} ${targetb} "rpm -q --quiet ${reqd_package}"
+  then
+    pad " · Error - ${reqd_package} is not installed on ${targetb}"
+    print_FAIL
+  else
+    pad " · Creating a filesystem on ${targetb}"
+    ${ssh} ${targetb} "umount /dev/vdb*"
+    ${ssh} ${targetb} "dd if=/dev/zero of=/dev/vdb bs=1024 count=2" &&
+    ${ssh} ${targetb} "parted /dev/vdb mklabel msdos -s" &&
+    ${ssh} ${targetb} "parted /dev/vdb mkpart primary 1GiB 3Gib -s" &&
+    ${ssh} ${targetb} "mkfs.xfs -f /dev/vdb1"
+    fstype_compare=$(${ssh} ${targetb} "lsblk -fs" | grep vdb1 | awk '{ print $2 }')
+    if [ "${fstype_compare}" == "xfs" ]
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Creating ${comp_review5_user} user on ${targetb}"
+    if ${ssh} ${targetb} "useradd ${comp_review5_user}" &&
+       ${ssh} ${targetb} "echo redhat | passwd --stdin ${comp_review5_user}"
+    then
+      print_SUCCESS
+    else
+      if ${ssh} ${targetb} "getent passwd ${comp_review5_user}" ||
+         ${ssh} ${targetb} "getent shadow ${comp_review5_user}"
+      then
+	${ssh} ${targetb} "userdel -r ${comp_review5_user}" &&
+        ${ssh} ${targetb} "useradd ${comp_review5_user}" &&
+        ${ssh} ${targetb} "echo redhat | passwd --stdin ${comp_review5_user}" &&
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    fi
+
+    pad " · Creating ${comp_review5_group} group on ${targetb}"
+    if ${ssh} ${targetb} "groupadd ${comp_review5_group}"
+    then
+      print_SUCCESS
+    else
+      if ${ssh} ${targetb} "getent group ${comp_review5_group}"
+      then
+	${ssh} ${targetb} "groupdel ${comp_review5_group}" &&
+        ${ssh} ${targetb} "groupadd ${comp_review5_group}" &&
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    fi
+
+    pad " · Creating first file on ${targetb}"
+    if ${ssh} ${targetb} "echo 'This is the first file.' > ${comp_review5_file1}"
+    then
+      print_SUCCESS
+    else
+      if ${ssh} ${targetb} "test -s ${comp_review5_file1}"
+      then
+        ${ssh} ${targetb} "rm -f ${comp_review5_file1}" &&
+        ${ssh} ${targetb} "echo 'This is the first file.' > ${comp_review5_file1}" &&
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    fi
+
+    pad " · Creating second file on ${targetb}"
+    if ${ssh} ${targetb} "echo 'This is the second file.' > ${comp_review5_file2}" &&
+       ${ssh} ${targetb} "chown ${comp_review5_user}:${comp_review5_group} ${comp_review5_file2}" &&
+       ${ssh} ${targetb} "chmod 640 ${comp_review5_file2}"
+    then
+      print_SUCCESS
+    else
+      if ${ssh} ${targetb} "test -s ${comp_review5_file2}"
+      then
+        ${ssh} ${targetb} "rm -f ${comp_review5_file2}" &&
+        ${ssh} ${targetb} "echo 'This is the second file.' > ${comp_review5_file2}" &&
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    fi
+
+    pad " · Creating third file on ${targetb}"
+    if ${ssh} ${targetb} "dd if=/dev/urandom of=${comp_review5_file3} bs=100 count=1"
+    then
+      print_SUCCESS
+    else
+      if ${ssh} ${targetb} "test -s ${comp_review5_file3}"
+      then
+        ${ssh} ${targetb} "rm -f ${comp_review5_file3}" &&
+        ${ssh} ${targetb} "dd if=/dev/urandom of=${comp_review5_file3} bs=100 count=1" &&
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    fi
+    
+    print_line
+  fi
+}
+
+function lab_grade {
+
+  print_header "Grading the student's work on ${targetb}:"
+  host_reachable ${targetb}
+
+  # Put in the steps to grade the lab (use print_PASS or print_FAIL)
+  pad " · Confirming if ${comp_review5_disk} is mounted on ${targetb}"
+  review5_disk_verify=$(${ssh} ${targetb} "df -Th | grep ${comp_review5_disk} | grep vdb1 | wc -l")
+  if [ ${review5_disk_verify} -eq 1 ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Evaluating the first file content on ${targetb}"
+  if ${ssh} ${targetb} "test -s ${comp_review5_txt1}"
+  then
+    review5_txt1_verify=$(${ssh} ${targetb} "cat ${comp_review5_txt1}")
+    review5_path1_verify=$(${ssh} ${targetb} "cat ${review5_txt1_verify}")
+    if [ "${review5_path1_verify}" == "This is the first file." ]
+    then
+      print_PASS
+    else
+      print_FAIL
+    fi
+  else
+    print_FAIL
+  fi
+
+
+  pad " · Evaluating the second file content on ${targetb}"
+  if ${ssh} ${targetb} "test -s ${comp_review5_file2}" &&
+     ${ssh} ${targetb} "test -s ${comp_review5_txt2}"
+  then
+    review5_txt2_verify=$(${ssh} ${targetb} "grep ${comp_review5_file2} ${comp_review5_txt2}")
+    review5_path2_verify=$(${ssh} ${targetb} "ls -l ${review5_txt2_verify}" | awk '{ print $1,$3,$4}')
+    if [ "${review5_path2_verify}" == "-rw-r-----. contractor1 contractor" ]
+    then
+      print_PASS
+    else
+      print_FAIL
+    fi
+  else
+    print_FAIL
+  fi
+
+  pad " · Evaluating the third file content on ${targetb}"
+  if ${ssh} ${targetb} "test -s ${comp_review5_file3}" &&
+     ${ssh} ${targetb} "test -s ${comp_review5_txt3}"
+  then
+    review5_txt3_verify=$(${ssh} ${targetb} "grep ${comp_review5_file3} ${comp_review5_txt3}")
+    review5_path3_verify=$(${ssh} ${targetb} "wc -c ${review5_txt3_verify}" | awk '{ print $1 }')
+    echo ${review5_path3_verify} > /tmp/paul.txt
+    if [ "${review5_path3_verify}" == "100" ]
+    then
+      print_PASS
+    else
+      print_FAIL
+    fi
+  else
+    print_FAIL
+  fi
+
+
+  # Overall grade
+  print_line
+  pad 'Overall lab grade'
+  if [[ ${fail_count} -eq 0 ]]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  print_line
+}
+
+
+
+function lab_finish {
+
+  print_header "Completing the lab on ${targetb}:"
+  host_reachable ${targetb}
+
+  reqd_package='parted util-linux'        # Just an example
+
+  pad " · Ensuring that the required environment is clean on ${targetb}"
+  if ${ssh} ${targetb} "rpm -q --quiet ${reqd_package}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Freeing up ${comp_review5_disk} on ${targetb}"
+  ${ssh} ${targetb} "rm -f ${comp_review5_disk}/*" 
+  if ! ${ssh} ${targetb} "test -s ${comp_review5_disk}/review5-path" &&
+     ! ${ssh} ${targetb} "test -s ${comp_review5_disk}/review5-perms" &&
+     ! ${ssh} ${targetb} "test -s ${comp_review5_disk}/review5-size"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Unmounting ${comp_review5_disk} on ${targetb}"
+  ${ssh} ${targetb} "umount /dev/vdb*" 
+  if ! ${ssh} ${targetb} "df -Th | grep vdb"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Deleting ${comp_review5_disk} from ${targetb}"
+  ${ssh} ${targetb} "dd if=/dev/zero of=/dev/vdb bs=1024 count=2" &&
+  ${ssh} ${targetb} "rm -rf ${comp_review5_disk}"
+  fstype_compare=$(${ssh} ${targetb} "lsblk -fs | grep vdb1" | awk '{ print $2 }')
+  if ! [ "${fstype_compare}" == "xfs" ]
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Deleting ${comp_review5_user} from ${targetb}"
+  ${ssh} ${targetb} "userdel -r ${comp_review5_user}"
+  if ! ${ssh} ${targetb} "getent passwd ${comp_review5_user}" &&
+     ! ${ssh} ${targetb} "getent shadow ${comp_review5_user}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Deleting ${comp_review5_group} from ${targetb}"
+  ${ssh} ${targetb} "groupdel ${comp_review5_group}"
+  if ! ${ssh} ${targetb} "getent group ${comp_review5_group}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

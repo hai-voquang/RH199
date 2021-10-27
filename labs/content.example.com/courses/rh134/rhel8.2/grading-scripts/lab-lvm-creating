@@ -1,0 +1,163 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-lvm-creating - grading script for creating logical volume exercise
+#
+# SYNOPSIS
+#     lab-lvm-creating {start|finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script verifies servera is accessible.  It also checks for
+#     storage and lvm tools.
+#
+# CHANGELOG
+#   * Fri May 24 2019 George Hacker <ghacker@redhat.com>
+#   - only remove existing resources when finishing
+#   - back up and restore original /etc/fstab
+#   * Fri Mar 22 2019 Marc Kesler <rkesler@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='servera'
+reqd_packages='lvm2 parted psmisc'
+blkdev='/dev/vdb'
+pv1="${blkdev}1"
+pv2="${blkdev}2"
+vgname="${target}_01_vg"
+lvname="${target}_01_lv"
+ch07s02_fstab='/var/tmp/fstab.ch07s02.GE'
+dir='/data'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start finish)
+
+function lab_start {
+
+  print_header 'Starting exercise.'
+
+  print_line "Preparing ${target} for exercise work:"
+  print_line
+  host_reachable ${target}
+
+  for package in ${reqd_packages}
+  do
+    pad " · Ensuring ${package} package is installed "
+    if ${ssh} ${target} "rpm -q ${package}" ||
+       ${ssh} ${target} "yum -y install ${package}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  done
+
+  pad " · Ensuring ${blkdev} block device is present "
+  if ${ssh} ${target} "parted ${blkdev} print"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+  fi
+
+  if ${ssh} ${target} "test ! -f ${ch07s02_fstab}"
+  then
+    pad " · Saving /etc/fstab on ${target}"
+    ${ssh} ${target} "cp /etc/fstab ${ch07s02_fstab}"
+    print_SUCCESS
+  fi
+
+  print_line
+
+}
+
+function lab_finish {
+
+  print_header "Completing the exercise on ${target}:"
+  host_reachable ${target}
+
+  if ${ssh} ${target} "test -f ${ch07s02_fstab}"
+  then
+    pad " · Restoring original /etc/fstab on ${target}"
+    ${ssh} ${target} "cp ${ch07s02_fstab} /etc/fstab && rm -f ${ch07s02_fstab}"
+    print_SUCCESS
+  fi
+
+  pad " · Ensuring ${dir} is not busy "
+  if ${ssh} ${target} "fuser ${dir}"
+  then
+    ${ssh} ${target} "fuser ${dir} -k"
+  fi
+  print_SUCCESS
+
+  if ${ssh} ${target} "df -h ${dir}"
+  then
+    pad " · Unmounting ${dir} filesystem "
+    ${ssh} ${target} "fuser -km ${dir}"
+    ${ssh} ${target} "umount ${dir}"
+    print_SUCCESS
+  fi
+
+  if ${ssh} ${target} "test -d ${dir}"
+  then
+    pad " · Removing ${dir} directory "
+    ${ssh} ${target} "rmdir ${dir}"
+    print_SUCCESS
+  fi
+
+  if ${ssh} ${target} "lvdisplay /dev/${vgname}/${lvname}"
+  then
+    pad " · Removing ${lvname} logical volume "
+    ${ssh} ${target} "lvremove -f /dev/${vgname}/${lvname}"
+    print_SUCCESS
+  fi
+
+  if ${ssh} ${target} "vgdisplay ${vgname}"
+  then
+    pad " · Removing ${vgname} volume group "
+    ${ssh} ${target} "vgremove -f ${vgname}"
+    print_SUCCESS
+  fi
+
+  for pv in ${pv1} ${pv2}
+  do
+    if ${ssh} ${target} "pvdisplay ${pv}"
+    then
+      pad " · Removing physical volume ${pv} "
+      ${ssh} ${target} "pvremove -f ${pv}"
+      print_SUCCESS
+    fi
+  done
+
+  pad " · Cleaning up the second disk on ${target} "
+  for i in 2 1
+  do
+    if ${ssh} ${target} "test -b ${blkdev}$i"
+    then
+      ${ssh} ${target} "dd if=/dev/zero of=${blkdev}$i bs=512 count=10"
+      ${ssh} ${target} "parted --script ${blkdev} rm $i"
+    fi
+  done
+  ${ssh} ${target} "wipefs --all --force ${blkdev}"
+  ${ssh} ${target} "test -b ${blkdev} && dd if=/dev/zero of=${blkdev} bs=1024 count=2048"
+  print_SUCCESS
+
+  print_line
+
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

@@ -1,0 +1,251 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-advstorage-stratis - grading script for RH134 Managing Layered Storage with Stratis
+#
+# SYNOPSIS
+#     lab-advstorage-stratis {start|finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start
+#     or finish for the Managing Layered Storage with Stratis Guided Exercise. 
+#
+# CHANGELOG
+#   * Thu Mar 29 2019 Saumik Paul <saumik@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='servera'
+ge_user='student'
+ge_disk1='/dev/vdb'
+ge_disk2='/dev/vdc'
+ge_stratis_pool='stratispool1'
+ge_stratis_pool_node='/stratis/stratispool1'
+ge_stratis_fs='stratis-filesystem1'
+ge_stratis_fs_node='/stratis/stratispool1/stratis-filesystem1'
+ge_stratis_fs_snapshot='stratis-filesystem1-snap'
+ge_stratis_fs_snapshot_node='/stratis/stratispool1/stratis-filesystem1-snap'
+ge_fs_mount='/stratisvol'
+ge_fs_snap_mount='/stratisvol-snap'
+ge_vdo_volume='vdo1'
+ge_vdo_node='/dev/mapper/vdo1'
+ge_volume_dir='/mnt/vdo1'
+
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start finish)
+
+
+function lab_start {
+
+  reqd_package='systemd vdo'        # Just an example
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} for lab exercise work:"
+  print_line
+  host_reachable ${target}
+
+
+  # Check for lab prerequisites (perhaps a required package?).
+  if ! ${ssh} ${target} "rpm -q --quiet ${reqd_package}"
+  then
+    pad " · Error - ${reqd_package} is not installed on ${target}"
+    print_FAIL
+  else
+    pad " · Ensuring ${ge_stratis_fs_snapshot} does not exist on ${target}"
+    ${ssh} ${target} "yum -y install stratisd stratis-cli" &&
+    ${ssh} ${target} "systemctl start stratisd.service" &&
+    ${ssh} ${target} "umount ${ge_fs_snap_mount}"
+    ${ssh} ${target} "stratis fs destroy ${ge_stratis_pool} ${ge_stratis_fs_snapshot}"
+    stratis_fs1=$(${ssh} ${target} "stratis fs list" | grep ${ge_stratis_fs_snapshot} | wc -l)
+    if [ "${stratis_fs1}" -eq 0 ]
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Ensuring ${ge_stratis_fs} does not exist on ${target}"
+    ${ssh} ${target} "umount ${ge_fs_mount}"
+    ${ssh} ${target} "stratis fs destroy ${ge_stratis_pool} ${ge_stratis_fs}"
+    stratis_fs1=$(${ssh} ${target} "stratis fs list" | grep ${ge_stratis_fs} | wc -l)
+    if [ "${stratis_fs1}" -eq 0 ]
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Ensuring ${ge_stratis_pool} does not exist on ${target}"
+    ${ssh} ${target} "stratis pool destroy ${ge_stratis_pool}"
+    stratis_pool1=$(${ssh} ${target} "stratis pool list" | grep ${ge_stratis_pool} | wc -l)
+    if [ "${stratis_pool1}" -eq 0 ]
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Ensuring ${ge_fs_mount} does not exist on ${target}"
+    ${ssh} ${target} "rm -rf ${ge_fs_mount}"
+    if ! ${ssh} ${target} "test -e ${ge_fs_mount}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Ensuring ${ge_fs_snap_mount} does not exist on ${target}"
+    ${ssh} ${target} "rm -rf ${ge_fs_snap_mount}"
+    ${ssh} ${target} "yum -y remove stratisd stratis-cli" &&
+    ${ssh} ${target} "systemctl stop stratisd.service"
+    if ! ${ssh} ${target} "test -e ${ge_fs_snap_mount}" &&
+       ! ${ssh} ${target} "rpm -q stratisd stratis-cli"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Ensuring clean additional disks on ${target}"
+    ${ssh} ${target} "dd if=/dev/zero of=${ge_disk1} bs=500M count=2"
+    ${ssh} ${target} "dd if=/dev/zero of=${ge_disk2} bs=500M count=2"
+    disk1_part=$(${ssh} ${target} "lsblk ${ge_disk1}" | sed '1d' | grep -E 'part|stratis|vdo' | wc -l)
+    disk2_part=$(${ssh} ${target} "lsblk ${ge_disk2}" | sed '1d' | grep -E 'part|stratis|vdo' | wc -l)
+    if [ "${disk1_part}" -eq 0 ] &&
+       [ "${disk2_part}" -eq 0 ]
+    then
+      print_SUCCESS
+    else
+      ${ssh} ${target} "stratis fs destroy ${ge_stratis_pool} ${ge_stratis_fs_snapshot}"
+      ${ssh} ${target} "stratis fs destroy ${ge_stratis_pool} ${ge_stratis_fs}"
+      ${ssh} ${target} "stratis pool destroy ${ge_stratis_pool}"
+      ${ssh} ${target} "umount ${ge_vdo_node}"
+      ${ssh} ${target} "vdo remove --name=${ge_vdo_volume}"
+      ${ssh} ${target} "dd if=/dev/zero of=${ge_disk1} bs=500M count=2"
+      ${ssh} ${target} "dd if=/dev/zero of=${ge_disk2} bs=500M count=2"
+      disk1_part=$(${ssh} ${target} "lsblk ${ge_disk1}" | sed '1d' | grep -E 'part|stratis|vdo' | wc -l)
+      disk2_part=$(${ssh} ${target} "lsblk ${ge_disk2}" | sed '1d' | grep -E 'part|stratis|vdo' | wc -l)
+      if [ "${disk1_part}" -eq 0 ] &&
+         [ "${disk2_part}" -eq 0 ]
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    fi
+
+    print_line
+  fi
+}
+
+function lab_finish {
+
+  print_header "Completing the lab on ${target}:"
+  host_reachable ${target}
+
+  pad " · Removing ${ge_stratis_fs_snapshot} from on ${target}"
+  ${ssh} ${target} "yum -y install stratisd stratis-cli" &&
+  ${ssh} ${target} "systemctl start stratisd.service" &&
+  ${ssh} ${target} "umount ${ge_fs_snap_mount}"
+  ${ssh} ${target} "stratis fs destroy ${ge_stratis_pool} ${ge_stratis_fs_snapshot}"
+  stratis_fs1=$(${ssh} ${target} "stratis fs list" | grep ${ge_stratis_fs_snapshot} | wc -l)
+  if [ "${stratis_fs1}" -eq 0 ]
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Removing ${ge_stratis_fs} from ${target}"
+  ${ssh} ${target} "umount ${ge_fs_mount}"
+  ${ssh} ${target} "stratis fs destroy ${ge_stratis_pool} ${ge_stratis_fs}"
+  stratis_fs1=$(${ssh} ${target} "stratis fs list" | grep ${ge_stratis_fs} | wc -l)
+  if [ "${stratis_fs1}" -eq 0 ]
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Removing ${ge_stratis_pool} from ${target}"
+  ${ssh} ${target} "stratis pool destroy ${ge_stratis_pool}"
+  stratis_pool1=$(${ssh} ${target} "stratis pool list" | grep ${ge_stratis_pool} | wc -l)
+  if [ "${stratis_pool1}" -eq 0 ]
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Removing ${ge_fs_mount} from ${target}"
+  ${ssh} ${target} "rm -rf ${ge_fs_mount}"
+  if ! ${ssh} ${target} "test -e ${ge_fs_mount}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Removing ${ge_fs_snap_mount} from ${target}"
+  ${ssh} ${target} "rm -rf ${ge_fs_snap_mount}"
+  ${ssh} ${target} "yum -y remove stratisd stratis-cli" &&
+  ${ssh} ${target} "systemctl stop stratisd.service"
+  if ! ${ssh} ${target} "test -e ${ge_fs_snap_mount}" &&
+     ! ${ssh} ${target} "rpm -q stratisd stratis-cli"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Ensuring clean additional disks on ${target}"
+  ${ssh} ${target} "dd if=/dev/zero of=${ge_disk1} bs=500M count=1"
+  ${ssh} ${target} "dd if=/dev/zero of=${ge_disk2} bs=500M count=1"
+  disk1_part=$(${ssh} ${target} "lsblk ${ge_disk1}" | sed '1d' | grep -E 'part|stratis|vdo' | wc -l)
+  disk2_part=$(${ssh} ${target} "lsblk ${ge_disk2}" | sed '1d' | grep -E 'part|stratis|vdo' | wc -l)
+  if [ "${disk1_part}" -eq 0 ] &&
+     [ "${disk2_part}" -eq 0 ]
+  then
+    print_SUCCESS
+  else
+    ${ssh} ${target} "stratis fs destroy ${ge_stratis_pool} ${ge_stratis_fs_snapshot}"
+    ${ssh} ${target} "stratis fs destroy ${ge_stratis_pool} ${ge_stratis_fs}"
+    ${ssh} ${target} "stratis pool destroy ${ge_stratis_pool}"
+    ${ssh} ${target} "umount ${ge_vdo_node}"
+    ${ssh} ${target} "vdo remove --name=${ge_vdo_volume}"
+    ${ssh} ${target} "dd if=/dev/zero of=${ge_disk1} bs=500M count=2"
+    ${ssh} ${target} "dd if=/dev/zero of=${ge_disk2} bs=500M count=2"
+    disk1_part=$(${ssh} ${target} "lsblk ${ge_disk1}" | sed '1d' | grep -E 'part|stratis|vdo' | wc -l)
+    disk2_part=$(${ssh} ${target} "lsblk ${ge_disk2}" | sed '1d' | grep -E 'part|stratis|vdo' | wc -l)
+    if [ "${disk1_part}" -eq 0 ] &&
+       [ "${disk2_part}" -eq 0 ]
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

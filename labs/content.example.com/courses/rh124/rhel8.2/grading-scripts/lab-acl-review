@@ -1,0 +1,201 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-acl-review - Grading script for RH134 ACL Review Lab.
+#
+# SYNOPSIS
+#     lab-acl-review {start|grade|finish}
+#
+#        start   - prepare the system for starting the lab
+#        grade   - performs grading for the lab
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start, grade or
+#     finish for the RH134 ACL Review Lab
+#
+# CHANGELOG
+#   * Wed May 28 2019 Dallas Spohn <dspohn@redhat.com>
+#   - added overall grade.
+#   * Wed Mar 28 2019 Adrian Andrade <aandrade@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+work='workstation'
+target1='serverb'
+reqd_package='vim-enhanced'
+sharefolder='/shares/cases'
+group1='managers'
+group2='contractors'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start grade finish)
+
+
+function lab_start {
+
+  print_header 'Starting lab.'
+  print_line
+
+  print_line "Preparing ${target1} for lab exercise work:"
+  print_line
+
+  pad " · Verifying that ${target1} is running: "
+  if host_reachable ${target1}
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Creating required groups in ${target1}: "
+  ${ssh} ${target1} "groupadd ${group1}"
+  ${ssh} ${target1} "groupadd ${group2}"
+  print_SUCCESS
+
+  pad " · Creating required users in ${target1}: "
+  ${ssh} ${target1} "useradd -g ${group1} manager1"
+  ${ssh} ${target1} "useradd -g ${group1} manager2"
+  ${ssh} ${target1} "useradd -g ${group2} contractor1"
+  ${ssh} ${target1} "useradd -g ${group2} contractor2"
+  ${ssh} ${target1} "useradd -g ${group2} contractor3"
+  print_SUCCESS
+
+  pad " · Assigning password for users in ${target1}: "
+  ${ssh} ${target1} "echo 'redhat' | passwd --stdin manager1"
+  ${ssh} ${target1} "echo 'redhat' | passwd --stdin manager2"
+  ${ssh} ${target1} "echo 'redhat' | passwd --stdin contractor1"
+  ${ssh} ${target1} "echo 'redhat' | passwd --stdin contractor2"
+  ${ssh} ${target1} "echo 'redhat' | passwd --stdin contractor3"
+  print_SUCCESS
+
+  pad " · Creating required directories in ${target1}: "
+  ${ssh} ${target1} "mkdir -p /shares/cases"
+  print_SUCCESS
+
+  pad " · Configuring file permissions in ${target1}: "
+  ${ssh} ${target1} "chmod 770 /shares/cases"
+  print_SUCCESS
+
+  pad " · Creating required files in ${target1}: "
+  cat << 'EOF' | ${ssh} ${target1}  "cat > /shares/cases/shortlist.txt"
+###Shortlist of Clients to call###TEMPLATE###
+EOF
+
+  cat << 'EOF' | ${ssh} ${target1}  "cat > /shares/cases/backlog.txt"
+###Backlog of Clients to call###TEMPLATE###
+EOF
+
+  print_SUCCESS
+
+  print_line
+
+}
+
+function lab_grade {
+
+  print_header "Grading the lab:"
+  print_line
+
+  pad " · Verifying folder permissions in ${target1}: "
+  if ${ssh} ${target1} "ls -ld /shares/cases | awk '{print $1}' | grep 'drwxrws---'"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying folder group ownership in ${target1}: "
+  if ${ssh} ${target1} "ls -ld /shares/cases | awk '{print $4}' | grep 'managers'"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying contractors ACL in ${target1}: "
+  if ${ssh} ${target1} "getfacl -c /shares/cases | grep '^group:contractors:rwx'"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying contractor3 ACL in ${target1}: "
+  if ${ssh} ${target1} "getfacl -c /shares/cases | grep '^user:contractor3:r-x'"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying contractors Default ACL in ${target1}: "
+  if ${ssh} ${target1} "getfacl -c /shares/cases | grep '^default:group:contractors:rwx'"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying contractor3 Default ACL in ${target1}: "
+  if ${ssh} ${target1} "getfacl -c /shares/cases | grep '^default:user:contractor3:r-x'"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  # Overall grade
+  print_line
+  pad 'Overall lab grade'
+  if [[ ${fail_count} -eq 0 ]]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  print_line
+
+}
+
+function lab_finish {
+
+  print_header "Completing the lab in ${target1}:"
+  print_line
+
+  pad " · Cleaning exercise files and folders in ${target1}: "
+  ${ssh} ${target1} "rm -rf /shares"
+  print_SUCCESS
+  pad " · Deleting users in ${target1}: "
+  ${ssh} ${target1} "userdel -r manager1"
+  ${ssh} ${target1} "userdel -r manager2"
+  ${ssh} ${target1} "userdel -r contractor1"
+  ${ssh} ${target1} "userdel -r contractor2"
+  ${ssh} ${target1} "userdel -r contractor3"
+  print_SUCCESS
+
+  pad " · Deleting groups in ${target1}: "
+  ${ssh} ${target1} "groupdel ${group1}"
+  ${ssh} ${target1} "groupdel ${group2}"
+  print_SUCCESS
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

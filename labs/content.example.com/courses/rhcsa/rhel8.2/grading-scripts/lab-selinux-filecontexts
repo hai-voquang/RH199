@@ -1,0 +1,139 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-selinux-filecontexts - grading script for RH134 Controlling SELinux File Contexts
+#
+# SYNOPSIS
+#     lab-template {start|grade|finish}
+#
+#        start   - prepare the system for starting the lab
+#        grade   - perform evaluation steps on the system
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start, grading,
+#     or finish for the particular lab of awesomeness.
+#
+# CHANGELOG
+#   * Fri Mar 22 2019 Fiona Allen <fallen@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='servera'
+reqd_package='httpd'
+directory='/custom'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start finish)
+
+
+function lab_start {
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing workstation for lab exercise work:"
+
+  pad " · Verifying that ${target} is running: "
+  if host_reachable ${target}
+   then
+     print_SUCCESS
+   else
+     print_FAIL
+  fi
+  
+  # Check that required package(s) is/are installed.
+  pad " · Ensuring package is installed: ${reqd_package}"
+  if  ${ssh} ${target} "rpm -q --quiet ${reqd_package}"
+  then
+    print_SUCCESS
+    elif  ${ssh} ${target} "yum -y install ${reqd_package}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+  fi
+
+  pad " · Setting firewall rules: "
+  if ${ssh} ${target} "firewall-cmd --zone=public --add-service=http --permanent"
+  then 
+    if ${ssh} ${target} "firewall-cmd --reload"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  print_line
+  host_reachable ${target}
+
+}
+
+
+function lab_finish {
+
+  print_header "Cleaning up the lab on ${target}:"
+  host_reachable ${target}
+
+  pad " · Cleaning up firewall rules: "
+  if ${ssh} ${target} "firewall-cmd --zone=public --remove-service=http --permanent"
+  then
+    if ${ssh} ${target} "firewall-cmd --reload"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  pad " · Removing ${reqd_package}: "
+  if ! ${ssh} ${target} "rpm -q --quiet ${reqd_package}"
+  then
+    print_SUCCESS
+    elif
+      ${ssh} ${target} "yum -y remove ${reqd_package}"
+      then
+        print_SUCCESS
+      else
+        print_FAIL
+   fi
+
+  pad " · Removing /custom file context: "
+  ${ssh} ${target} "semanage fcontext -d -t httpd_sys_content_t '/custom(/.*)?'"
+  if [[ $? -eq 0 || $? -eq 1 ]]
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+   pad " · Removing ${directory}: "
+   if ! ${ssh} ${target} " [ -d ${directory} ] "
+   then
+     print_SUCCESS
+     elif
+       ${ssh} ${target} "rm -rf ${directory}"
+       then
+         print_SUCCESS
+       else
+         print_FAIL
+   fi
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

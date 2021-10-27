@@ -1,0 +1,139 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-files-review - grading script for RH124 Lab
+#                        Managing Files from the Command Line
+#
+# SYNOPSIS
+#     lab-files-review {start|grade|finish}
+#
+#        start   - prepare the system for starting the lab
+#        grade   - perform evaluation steps on the system
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start, grading,
+#     or finish for the Managing Files from the Command Line lab.
+#
+# CHANGELOG
+#   * Wed Jan 30 2019 Victor Costea <vcostea@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='serverb'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start grade finish)
+
+
+function lab_start {
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} for lab exercise work:"
+  print_line
+
+  # Check that target host is reachable.
+  pad " · Check ${target}"
+  host_reachable ${target}
+  print_SUCCESS
+
+  print_line
+}
+
+function lab_grade {
+
+  print_header "Grading the student's work on ${target}:"
+  host_reachable ${target}
+
+  # Put in the steps to grade the lab (use print_PASS or print_FAIL)
+  pad ' · Checking files in chapters directory'
+  chapters_tot=$(${ssh} ${target} "ls /home/student/Documents/my_bestseller/chapters | wc -l")
+  if [ "${chapters_tot}" -eq 4 ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad ' · Checking files in editor directory'
+  editor_tot=$(${ssh} ${target} "ls /home/student/Documents/my_bestseller/editor | wc -l")
+  if [ "${editor_tot}" -eq 2 ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad ' · Checking files in season1 directory'
+  season1_tot=$(${ssh} ${target} "ls /home/student/Videos/season1 | wc -l")
+  if [ "${season1_tot}" -eq 6 ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad ' · Checking files in season2 directory'
+  season2_tot=$(${ssh} ${target} "ls /home/student/Videos/season2 | wc -l")
+  if [ "${season2_tot}" -eq 6 ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad ' · Checking hard link'
+  orig_file_inode=$(${ssh} ${target} "stat -c %i /home/student/Documents/project_plans/season2_project_plan.odf")
+  back_file_inode=$(${ssh} ${target} "stat -c %i /home/student/Documents/backups/season2_project_plan.odf.back")
+  if [ "${orig_file_inode}" -eq "${back_file_inode}" ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  # Overall grade
+  print_line
+  pad 'Overall lab grade'
+  if [[ ${fail_count} -eq 0 ]]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  print_line
+}
+
+function lab_finish {
+
+  print_header "You have completed attempting the lab exercise."
+
+  pad " · Checking $(target)."
+  host_reachable ${target}
+  print_SUCCESS
+
+  pad " · Removing lab content from ${target}."
+  cmd1='rm -rf /home/student/*'
+  ${ssh} ${target} "${cmd1}" &> /dev/null
+  print_SUCCESS
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

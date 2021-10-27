@@ -1,0 +1,248 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-net-review - grading script for RH124 chapter Lab:
+#                      Managing Networking
+#
+# SYNOPSIS
+#     lab-net-configure {start|grade|finish}
+#
+#        start   - prepare the system for starting the lab
+#        grade   - perform evaluation steps on the system
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start or
+#     finish for the Managing Networking chapter lab.
+#
+# CHANGELOG
+#   * Mon May 20 2019 Snehangshu Karmakar <snehk@redhat.com>
+#   - modified lab_finish & lab_grade code
+#   - fix pilot feedback
+#   * Fri Apr 19 2019 Victor Costea <vcostea@redhat.com>
+#   - modified lab_finish code
+#   * Tue Apr 16 2019 Saumik Paul <saumik@redhat.com>
+#   - modified code
+#   * Thu Feb 07 2019 Victor Costea <vcostea@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='serverb'
+#default_con_profile='ens3'
+static_con_profile='lab'
+lab_ip_address='172.25.250.11/24'
+lab_ip_address1="10.0.1.1/24"
+lab_ipv4_gateway='172.25.250.254'
+lab_ipv4_dns='172.25.250.254'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start grade finish)
+
+function lab_start {
+
+  cmd_backup_hosts="cp /etc/hosts{,.backup}"
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} for lab exercise work:"
+  print_line
+  pad " · Check ${target} connectivity"
+  host_reachable ${target}
+  print_SUCCESS
+
+  pad " · Storing the default profile"
+  echo $(${ssh} ${target} "nmcli -t -f NAME c show --active") > /tmp/defprofile
+  print_SUCCESS
+
+  ## Set immutable bit on /etc/hosts so lab_start can run multiple times without
+  ## corrupting the /etc/hosts.backup file
+  pad " · Backup ${target} hosts file"
+  ${ssh} ${target} ${cmd_backup_hosts}
+  ${ssh} ${target} "chattr +i /etc/hosts.backup"
+  print_SUCCESS
+
+  print_line
+}
+
+function lab_grade {
+
+  cmd_hosts_private=$(${ssh} ${target} grep private /etc/hosts | awk '{print $2}')
+  cmd_ip_address=$(ssh root@serverb nmcli -g ipv4.addresses con show lab | awk '{print $1}' | awk -F, '{print $1}')
+  cmd_ip_address1=$(ssh root@serverb nmcli -g ipv4.addresses con show lab | awk '{print $2}' | awk -F, '{print $1}')
+  cmd_ipv4_gateway=$(ssh root@serverb nmcli -g ipv4.gateway con show lab)
+  cmd_ipv4_dns=$(ssh root@serverb nmcli -g ipv4.dns con show lab)
+
+  print_header "Grading the student's work on ${target}:"
+
+  # Grade the following steps
+  if host_reachable ${target}; then
+    pad " · Check hosts file configuration"
+    if [[ ${cmd_hosts_private} = "private" ]]; then
+      print_PASS
+    else
+      print_FAIL
+    fi
+  
+    pad " · Check ${static_con_profile} network connection exists"
+    if ${ssh} ${target} "nmcli con show | grep ${static_con_profile}"; then
+      print_PASS
+      pad " · Check ${static_con_profile} is marked active"
+      if ${ssh} ${target} "nmcli -t -f NAME c show --active" | grep "${static_con_profile}"; then
+        print_PASS
+      else
+        print_FAIL
+      fi  
+
+      pad " · Check ${static_con_profile} autoconnect marked yes"
+      if ${ssh} ${target} "nmcli -g connection.autoconnect con show '${static_con_profile}' | grep yes"; then
+        print_PASS
+      else
+        print_FAIL
+      fi
+
+      pad " · Check ${static_con_profile} IP address and netmask"
+      if [[ ${cmd_ip_address} = "${lab_ip_address}" ]]; then
+        print_PASS
+      else
+        print_FAIL
+      fi
+
+      pad " · Check ${static_con_profile} second IP address and netmask"
+      if [[ ${cmd_ip_address1} = "${lab_ip_address1}" ]]; then
+        print_PASS
+      else
+        print_FAIL
+      fi
+    
+      pad " · Check ${static_con_profile} IPv4 gateway"
+      if [[ ${cmd_ipv4_gateway} = "${lab_ipv4_gateway}" ]]; then
+        print_PASS
+      else
+        print_FAIL
+      fi
+    
+      pad " · Check ${static_con_profile} IPv4 DNS"
+      if [[ ${cmd_ipv4_dns} = "${lab_ipv4_dns}" ]]; then
+        print_PASS
+      else
+        print_FAIL
+      fi
+    else
+      print_FAIL
+    fi  
+  else
+    print_FAIL
+  fi
+
+  # Overall grade
+  print_line
+  pad 'Overall lab grade'
+  if [[ ${fail_count} -eq 0 ]]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  print_line
+}
+
+
+function lab_finish {
+
+  #default_nic=$(get_nicname ${target} 1)
+  #default_nic_hwaddr=$(${ssh} ${target} "cat /sys/class/net/${default_nic}/address")
+  #default_ifcfg_file=$(${ssh} ${target} "grep -i -H -e ${default_nic_hwaddr} -e ${default_nic} /etc/sysconfig/network-scripts/*" | grep -v static | cut -d: -f1 | grep -v backup | grep -v ${static_con_profile})
+  #default_con_profile=$(${ssh} ${target} "grep -i name ${default_ifcfg_file}" | awk -F"=" '{ print $2 }')
+  default_con_profile="$(cat /tmp/defprofile)"
+
+  get_active_con=$(${ssh} ${target} nmcli -g NAME con show --active)
+  autoconnect_profile="nmcli con mod ${default_con_profile} connection.autoconnect yes"
+  activate_profile="nmcli con up"
+  remove_profile="nmcli con delete"
+  def_hosts_backup='/etc/hosts.backup'
+  get_hosts_backup_file=$(${ssh} ${target} ls /etc/hosts.backup)
+  cmd_restore_hosts="mv /etc/hosts{.backup,}"
+
+  print_header "Cleaning up the lab on ${target}:"
+
+  pad " · Check ${target}"
+  host_reachable ${target}
+  print_SUCCESS
+
+
+  ## If "Wired connection 1" con profile is active, then we're good 
+  ##
+  ## If lab con profile is active; change lab autoconnect to no, 
+  ## change "Wired connection 1" autoconnect to yes, and activate
+  ## 
+  ## if for some reason the active connection is not lab or "Wired connection 1",
+  ## change it's autoconnect to no,
+  ## change "Wired connection 1" autoconnect to yes, and activate
+  ##
+  pad " · Reset original connection profile"
+  if [ "${get_active_con}" == "${default_con_profile}" ]
+  then
+    print_SUCCESS
+  elif [ "${get_active_con}" == "${static_con_profile}" ]
+  then
+    ${ssh} ${target} "nmcli con mod '${get_active_con}' connection.autoconnect no"
+    ${ssh} ${target} "nmcli con mod '${default_con_profile}' connection.autoconnect yes"
+    ${ssh} ${target} "nmcli con up '${default_con_profile}'"
+    print_SUCCESS
+  elif [ "${get_active_con}" != "${static_con_profile}" ]
+  then
+    ${ssh} ${target} "nmcli con mod '${get_active_con}' connection.autoconnect no"
+    ${ssh} ${target} "nmcli con mod '${default_con_profile}' connection.autoconnect yes"
+    ${ssh} ${target} "nmcli con up '${default_con_profile}'"
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  ## Remove the lab connection profile
+  pad " · Remove ${static_con_profile} connection profile"
+  if ${ssh} ${target} "nmcli con show" | grep lab
+  then
+    ${ssh} ${target} ${remove_profile} ${static_con_profile}
+    print_SUCCESS
+  elif ! ${ssh} ${target} "nmcli con show" | grep lab
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+
+  ## Check for hosts.backup on target; remove immutable bit; restore to /etc/hosts
+  pad " · Restore the /etc/hosts file on ${target}"
+  if [[ "${get_hosts_backup_file}" = "${def_hosts_backup}" ]]
+  then
+    ${ssh} ${target} "chattr -i ${def_hosts_backup}"
+    ${ssh} ${target} "${cmd_restore_hosts}"
+    print_SUCCESS
+  elif [[ "${get_hosts_backup_file}" != "${def_hosts_backup}" ]]
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

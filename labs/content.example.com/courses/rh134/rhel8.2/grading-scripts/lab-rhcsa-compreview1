@@ -1,0 +1,254 @@
+#!/bin/bash
+#
+# Copyright 2019, 2020 Red Hat, Inc.
+#
+# NAME
+#     lab-rhcsa-compreview1 - grading script for RHCSA Comprehensive
+#                             Review I
+#
+# SYNOPSIS
+#     lab-rhcsa-compreview1 {start|grade|finish}
+#
+#        start   - prepare the system for starting the lab
+#        grade   - perform evaluation steps on the system
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start, grading,
+#     or finish for the RHCSA Comprehesive Review I.
+#
+# CHANGELOG
+#   * Wed Apr 03 2019 Snehangshu Karmakar <snehk@redhat.com>
+#   - original code
+
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='serverb'
+user='student'
+reqd_package=(cronie sendmail sshpass mailx)
+backupscript='/home/student/lab/backup-script.sh'
+content_rhel_ver='rhel8.2'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start grade break1 break2 finish)
+
+# Need a course variable from /etc/rht, which is only variables
+# Source the whole file to load all variables
+source /etc/rht
+
+function lab_start {
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} for lab exercise work:"
+  print_line
+
+  pad " · Verifying server is reachable: ${target}"
+  host_reachable ${target} && print_SUCCESS || print_FAIL
+
+
+  rhel_backup ${target} /boot/efi/EFI/redhat/grub.cfg /boot/efi/EFI/redhat/grubenv /etc/default/grub /boot/grub2/grub.cfg /boot/grub2/grubenv /boot/loader /etc/fstab
+
+  # Silently delete
+  rm -rf /tmp/step{1,2}
+
+  pad " · Installing required packages"
+
+  cat << EOF | ${ssh} ${target} 'cat - > /etc/yum.repos.d/ansible.repo'
+[ansible-2.9-for-rhel-8-x86_64-rpms]
+baseurl = http://content.example.com/${content_rhel_ver}/x86_64/rhel8-additional/ansible-2.9-for-rhel-8-x86_64-rpms
+enabled = true
+gpgcheck = false
+name = Red Hat Enterprise Linux 8.0 Additional (dvd)
+EOF
+  for pkg in ${reqd_package[@]}; do
+    if ! ${ssh} ${target} "rpm -q --quiet ${pkg}"; then
+      ${ssh} ${target} "yum install -y ${pkg}"
+    fi
+  done
+  local rc=0
+  for pkg in ${reqd_package[@]}; do
+    if ! ${ssh} ${target} "rpm -q --quiet ${pkg}"; then
+      let "rc++"
+    fi
+  done
+  if [[ rc -eq 0 ]];then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  if [[ "${RHT_COURSE}" != "rh199" ]]
+  # no acl content in RH199 Rapid Track, so do only if not rh199
+  then
+    pad " · Ensuring empty crontab for ${user}: ${target}"
+    if ! ${ssh} ${target} "crontab -l -u ${user}"; then
+      print_SUCCESS
+    else
+      if ${ssh} ${target} "crontab -r -u ${user}" &&
+        ! ${ssh} ${target} "crontab -l -u ${user}"; then
+        print_SUCCESS
+      else
+  	    print_FAIL
+      fi
+    fi
+  fi
+
+  print_line
+}
+
+function lab_break1 {
+
+  print_line "Preparing ${target} for first trouleshooting:"
+  print_line
+  host_reachable ${target}
+
+  pad " · Updating GRUB2 countdown on ${target}"
+  ${ssh} ${target} "sed -i -e 's/GRUB_TIMEOUT=.*/GRUB_TIMEOUT=20/' -e '/GRUB_CMDLINE_LINUX=/s/console=[^ ]*//g' /etc/default/grub"
+  print_SUCCESS
+
+  rhel_grub2_mkconfig ${target}
+
+  pad " · Breaking the boot process on ${target}"
+  ${ssh} ${target} "(echo; echo 'UUID=fake   /FakeMount   xfs   defaults   0 0') >> /etc/fstab"
+  print_SUCCESS
+
+  echo "lab rhcsa-compreview1 break1: $(date)" > /tmp/step1
+
+  pad " · Rebooting ${target}"
+  ${ssh} ${target} "systemctl reboot"
+  print_SUCCESS
+
+  print_line
+
+}
+
+function lab_break2 {
+
+  print_line "Preparing ${target} for second trouleshooting:"
+  print_line
+  host_reachable ${target}
+
+  pad " · Updating GRUB2 countdown on ${target}"
+  ${ssh} ${target} "sed -i -e 's/GRUB_TIMEOUT=.*/GRUB_TIMEOUT=20/' -e '/GRUB_CMDLINE_LINUX=/s/console=[^ ]*//g' /etc/default/grub"
+  print_SUCCESS
+
+  rhel_grub2_mkconfig ${target}
+
+  pad " · Setting the default target to graphical on ${target}"
+  ${ssh} ${target} "systemctl set-default graphical.target"
+  print_SUCCESS
+
+  echo "lab rhcsa-compreview1 break2: $(date)" > /tmp/step2 2&>/dev/null
+
+  pad " · Rebooting ${target}"
+  ${ssh} ${target} "systemctl reboot"
+  print_SUCCESS
+
+  print_line
+
+}
+
+function lab_grade {
+
+  print_header "Grading the student's work on ${target}:"
+  host_reachable ${target}
+
+  pad ' · Verifying execution: lab rhcsa-compreview1 break1'
+  if [[ -f /tmp/step1 ]]; then
+    print_PASS
+
+    pad " · Verifying boot fix: ${target}"
+    host_reachable ${target} && print_PASS || print_FAIL
+
+  else
+    print_FAIL
+  fi
+
+  pad ' · Verifying execution: lab rhcsa-compreview1 break2'
+  if [[ -f /tmp/step2 ]]; then
+    print_PASS
+
+    pad " · Verifying default target: ${target}"
+    deftarget=$(${ssh} ${target} "systemctl get-default")
+    if [[ "${deftarget}" == "multi-user.target" ]]; then
+      print_PASS
+    else
+      print_FAIL
+    fi
+  else
+    print_FAIL
+  fi
+
+  if [[ "${RHT_COURSE}" != "rh199" ]]
+  # no acl content in RH199 Rapid Track, so do only if not rh199
+  then
+    pad ' · Verifying the recurring schedule job'
+    if ${ssh} ${target} "test -e /var/spool/cron/student"; then
+      ${ssh} ${target} "crontab -l -u student > /tmp/croncheck1"
+      ${ssh} ${target} "echo '0 19-21 * * Mon-Fri /home/student/backup-home.sh' > /tmp/croncheck2"
+      ${ssh} ${target} "echo '0 19-21 * * 1-5 /home/student/backup-home.sh' > /tmp/croncheck3"
+      if ${ssh} ${target} "diff -E -Z -b -B /tmp/croncheck1 /tmp/croncheck2" || ${ssh} ${target} "diff -E -Z -b -B /tmp/croncheck1 /tmp/croncheck3"; then
+        print_PASS
+      else
+        print_FAIL
+      fi
+    else
+      print_FAIL
+    fi
+  fi
+
+  # Overall grade
+  print_line
+  pad 'Overall lab grade'
+  if [[ ${fail_count} -eq 0 ]]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  print_line
+}
+
+function lab_finish {
+
+  print_header "Cleaning up the lab on ${target}:"
+  host_reachable ${target}
+
+  rhel_restore ${target}
+
+  pad " · Removing cronjobs: ${target}"
+  if ! ${ssh} ${target} "crontab -l -u ${user}"; then
+    print_SUCCESS
+  else
+    if ${ssh} ${target} "crontab -r -u ${user}" &&
+       ! ${ssh} ${target} "crontab -l -u ${user}"; then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  pad " · Removing files created: ${target}"
+  ${ssh} ${target} "rm -rf ${labdir}"
+  print_SUCCESS
+
+  print_line "You have completed attempting the comprehensive review."
+  print_line "Reset workstation, servera, and serverb."
+
+  print_line 'Comprehensive review finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

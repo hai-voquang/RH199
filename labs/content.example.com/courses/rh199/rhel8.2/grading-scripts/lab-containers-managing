@@ -1,0 +1,73 @@
+#!/bin/bash
+#
+# Copyright 2020 Red Hat, Inc.
+#
+# NAME
+#     lab-containers-managing - lab script for RH134 Finding and Managing Container images guided exercise
+#
+# SYNOPSIS
+#     lab-containers-manaing {start | finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start
+#     or finish for the guided exercise
+#
+# CHANGELOG
+#   * Thu Aug 20 2020 Herve Quatremain <hquatrem@redhat.com>
+#   - original code
+#   * Thu Aug 20 2020 Ed Parenti <eparenti@redhat.com>
+#   - revised per testing and added a check for images in the registry
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='servera'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start finish)
+
+
+function lab_start {
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} for lab exercise work:"
+  print_line
+  host_reachable ${target}
+
+  rhel_containers_check_quay
+
+  rhel_containers_deploy_client ${target}
+
+  rhel_containers_inspect_image admin redhat321 registry.lab.example.com/rhel8/httpd-24 Digest
+  rhel_containers_inspect_image admin redhat321 registry.lab.example.com/ubi7/ubi Digest
+  rhel_containers_inspect_image admin redhat321 registry.lab.example.com/ubi8/ubi Digest
+
+  print_line
+}
+
+
+function lab_finish {
+
+  print_header "Cleaning up the lab on ${target}:"
+  host_reachable ${target}
+
+  rhel_containers_undeploy_client ${target}
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

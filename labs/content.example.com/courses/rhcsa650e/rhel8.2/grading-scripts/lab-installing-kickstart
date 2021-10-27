@@ -1,0 +1,319 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-installing-kickstart Start script for Guided Exercise Creating Logical Voluimes
+#
+# SYNOPSIS
+#     lab-installing-kickstart {start|grade|finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab cleanup
+# DESCRIPTION
+#     This script verifies servera is accessible.  It also configures Apache for the lab.
+#
+# CHANGELOG
+#   * Wed May 22 2019 Saumik Paul <saumik@redhat.com>
+#   - Converted to use nested "if" under "finish verb to make the script more robust
+#   * Fri Apr 04 2019 Marc Kesler <rkesler@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='servera'
+reqd_package1='pykickstart'
+reqd_package2='httpd'
+firewall_svc='http'
+web_svc='httpd'
+doc_dir='/var/www/html/ks-config'
+ks_file='kickstart.cfg'
+content_rhel_ver='rhel8.2'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start finish)
+
+
+function lab_start {
+
+  print_header 'Starting lab.'
+
+  print_line "Checking ${target} for lab exercise work:"
+  print_line
+
+  pad ". Check ${target}"
+  host_reachable ${target}
+  print_SUCCESS
+  print_line
+
+  print_line "Checking packages for lab exercise work:"
+  print_line
+
+  pad ". Ensuring package is installed: ${reqd_package1}"
+  if ${ssh} ${target} "rpm -q --quiet ${reqd_package1}"
+    then
+      print_SUCCESS
+  elif ${ssh} ${target} "yum -y install ${reqd_package1}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+  fi
+
+  pad ". Ensuring package is installed: ${reqd_package2}"
+  if ${ssh} ${target} "rpm -q --quiet ${reqd_package2}"
+    then
+      print_SUCCESS
+  elif ${ssh} ${target} "yum -y install ${reqd_package2}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+  fi
+
+  print_line
+
+  print_line "Configuring Apache for lab exercise work:"
+  print_line
+  ${ssh} ${target} "systemctl enable ${web_svc} --now"
+  pad ". Starting service: ${web_svc}"
+  if ${ssh} ${target} "systemctl is-active ${web_svc}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+  fi
+
+  ${ssh} ${target} "mkdir -p ${doc_dir}"
+  pad ". Create directory: ${doc_dir}"
+  if ${ssh} ${target} "ls -d ${doc_dir}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+  fi
+
+  ${ssh} ${target} firewall-cmd --add-service=${firewall_svc} --permanent
+  ${ssh} ${target} firewall-cmd --reload
+  pad ". Allow service in firewall: ${firewall_svc}"
+  if ${ssh} ${target} "firewall-cmd --list-services | grep http"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+  fi
+}
+
+function lab_grade {
+
+  print_header "Grading the student's work on ${target}:"
+  host_reachable ${target}
+
+  pad ". Check ${target}"
+  host_reachable ${target}
+  print_SUCCESS
+  print_line
+
+  pad ". Kickstart file available via http."
+  if curl -I ${ks_url} | grep "200 OK"
+  then
+    print_PASS
+  else
+    print_FAIL
+    print_line "Unable to find kickstart file."
+    exit 1
+  fi
+
+  pad "· reboot command commented."
+  TMP_OUT="$(mktemp)"
+  ${ssh} ${target} "cat /var/www/html/ks-config/kickstart.cfg" > "${TMP_OUT}"
+  if grep -v ^# "${TMP_OUT}" | grep -q ^reboot
+  then
+    print_FAIL
+  else
+    print_PASS
+  fi
+
+  pad "· BaseOS repo command commented."
+  if grep -v ^# "${TMP_OUT}" | grep -q BaseOS
+  then
+	  print_FAIL
+  else
+	  print_PASS
+  fi
+
+  pad ". AppStream repo command modified."
+  if grep -q ^'repo --name="appstream" --baseurl=http://classroom.example.com/content/.*/x86_64/dvd/AppStream/' "${TMP_OUT}"
+  then
+	  print_PASS
+  else
+	  print_FAIL
+  fi
+
+  pad "· network command commented."
+  if grep -v ^# "${TMP_OUT}" | grep -q ^network
+  then
+          print_FAIL
+  else
+          print_PASS
+  fi
+
+
+  pad ". rootpw command modified."
+  if grep -q ^'rootpw --plaintext redhat' "${TMP_OUT}"
+  then
+          print_PASS
+  else
+          print_FAIL
+  fi
+
+  pad ". services command modified."
+  if grep -q ^'services --disabled="kdump,rhsmcertd" --enabled="sshd,rngd,chronyd"' "${TMP_OUT}"
+  then
+          print_PASS
+  else
+          print_FAIL
+  fi
+
+  pad "· reqpart command commented."
+  if grep -v ^# "${TMP_OUT}" | grep -q ^reqpart
+  then
+          print_FAIL
+  else
+          print_PASS
+  fi
+
+  pad "· part command commented."
+  if grep -v ^# "${TMP_OUT}" | grep -q ^part
+  then
+          print_FAIL
+  else
+          print_PASS
+  fi
+
+  pad ". autopart command added."
+  if grep -q ^'autopart' "${TMP_OUT}"
+  then
+          print_PASS
+  else
+          print_FAIL
+  fi
+
+
+  pad ". Post installation section modified."
+  if grep -A5 ^'%post' "${TMP_OUT}" | grep -q 'echo "Kickstarted on $(date)" >> /etc/issue'
+  then
+          print_PASS
+  else
+          print_FAIL
+  fi
+
+  pad ". Packages section modified."
+  if grep -A 13 ^'%packages' "${TMP_OUT}" | grep -e @core -e chrony -e dracut-config-generic -e dracut-norescue -e firewalld -e grub2 -e kernel -e rsync -e tar -e httpd -e '-plymouth'
+  then
+          print_PASS
+  else
+          print_FAIL
+  fi
+
+
+  rm -f "${TMP_OUT}"
+
+  # Overall grade
+  print_line
+  pad 'Overall lab grade'
+  if [[ ${fail_count} -eq 0 ]]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  print_line
+
+}
+
+function lab_finish {
+
+  print_header 'Cleaning up lab environment.'
+
+  print_line "Removing lab work from ${target}."
+  print_line
+
+  ${ssh} ${target} firewall-cmd --remove-service=${firewall_svc} --permanent
+  ${ssh} ${target} firewall-cmd --reload
+  pad ". Remove service from firewall: ${firewall_svc}"
+  if ${ssh} ${target} "firewall-cmd --list-services | grep -v http"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+  fi
+
+  ${ssh} ${target} "rm -rf  ${doc_dir}"
+  pad ". Remove directory: ${doc_dir}"
+  if ${ssh} ${target} "ls -d ${doc_dir}"
+    then
+      print_FAIL
+    else
+      print_SUCCESS
+  fi
+
+  pad ". Ensuring package is removed: ${reqd_package1}"
+  if ${ssh} ${target} "rpm -q --quiet ${reqd_package1}"
+  then
+    ${ssh} ${target} "yum -y remove ${reqd_package1}"
+    if ! ${ssh} ${target} "rpm -q --quiet ${reqd_package1}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  elif ! ${ssh} ${target} "rpm -q --quiet ${reqd_package1}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad ". Ensuring package is removed: ${reqd_package2}"
+  if ${ssh} ${target} "rpm -q --quiet ${reqd_package2}"
+  then
+    ${ssh} ${target} "yum -y remove ${reqd_package2}"
+    if ! ${ssh} ${target} "rpm -q --quiet ${reqd_package2}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  elif ! ${ssh} ${target} "rpm -q --quiet ${reqd_package2}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  ${ssh} ${target} "rm /home/student/kickstart.cfg"
+  pad ". Remove kickstart file: ${ks_file}"
+  if ${ssh} ${target} "ls /home/student/${ks_file}"
+  then
+          print_FAIL
+  else
+          print_SUCCESS
+  fi
+
+  print_header 'Lab finished.'
+
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"
+

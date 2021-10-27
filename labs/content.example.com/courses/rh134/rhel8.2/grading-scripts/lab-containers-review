@@ -1,0 +1,324 @@
+#!/bin/bash
+#
+# Copyright 2020 Red Hat, Inc.
+#
+# NAME
+#     lab-containers-review - grading script for RH134 Running Containers lab
+#
+# SYNOPSIS
+#     lab-containers-review {start|grade|finish}
+#
+#        start   - prepare the system for starting the lab
+#        grade   - perform evaluation steps on the system
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start, grading,
+#     or finish for the Running Containers lab.
+#
+# CHANGELOG
+#   * Mon Aug 31 2020 Herve Quatremain <hquatrem@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='serverb'
+system_user='podsvc'
+persistent_dir="/home/${system_user}/db_data"
+reqd_package='mariadb'
+image='registry.lab.example.com/rhel8/mariadb-103'
+tag='1-86'
+container_name='inventorydb'
+local_port=13306
+MYSQL_USER=operator1
+MYSQL_PASSWORD=redhat
+MYSQL_DATABASE=inventory
+MYSQL_ROOT_PASSWORD=redhat
+storage='/var/lib/mysql/data'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start grade finish)
+
+
+function lab_start {
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} for lab exercise work:"
+  print_line
+  host_reachable ${target}
+
+  rhel_containers_check_quay
+
+  # Skipping the image check because the output reveals the tag that students
+  # must discover in the Lab.
+  #rhel_containers_inspect_image admin redhat321 ${image}:${tag} Digest
+
+  rhel_add_user ${target} ${system_user} redhat ""
+
+  rhel_containers_add_registry_DNS ${target} && \
+  rhel_containers_add_repository ${target} && \
+  rhel_containers_configure_quay_client_user ${target} ${system_user}
+
+  pad " · Checking that ${reqd_package} client is installed on ${target}"
+  cmd1="yum -y install ${reqd_package}"
+  if  ${ssh} ${target} "rpm -q --quiet ${reqd_package}"; then
+    print_SUCCESS
+  elif  ${ssh} ${target} "${cmd1}"; then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Deploying the help files on ${target}"
+  ${ssh} ${target} "mkdir -p ~${system_user}/${problem_name}"
+  cat <<EOF | ${ssh} ${target} "cat > ~${system_user}/${problem_name}/variables"
+        Container name: ${container_name}
+                 Image: ${image}
+             Image Tag: Search and then use the lowest tag number
+             Host port: ${local_port}
+        Container port: 3306
+       Local directory: ${persistent_dir}
+MariaDB data directory: ${storage}
+     MariaDB variables:
+                MYSQL_USER=${MYSQL_USER}
+            MYSQL_PASSWORD=${MYSQL_PASSWORD}
+            MYSQL_DATABASE=${MYSQL_DATABASE}
+       MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+
+EOF
+  cat <<EOF | ${ssh} ${target} "cat > ~${system_user}/${problem_name}/testdb.sh"
+#!/bin/bash
+
+echo 'Testing the access to the database...'
+sleep 5
+mysql -u ${MYSQL_USER} --password=${MYSQL_PASSWORD} \\
+      --port=${local_port} --host=127.0.0.1 -e 'show databases' | \\
+grep -qwi ${MYSQL_DATABASE}
+if [  \$? -eq 0 ]
+then
+  echo 'SUCCESS'
+else
+  echo 'FAILED'
+fi
+
+EOF
+  ${ssh} ${target} "chmod a+x ~${system_user}/${problem_name}/testdb.sh"
+  ${ssh} ${target} "chown -R ${system_user}: ~${system_user}/${problem_name}"
+  print_SUCCESS
+
+  print_line
+}
+
+function lab_grade {
+
+  print_header "Grading the student's work on ${target}:"
+  host_reachable ${target}
+
+  # Ensuring that the container is running if student has stopped it
+  if ${ssh} ${target} "id ${system_user}"
+  then
+    ${ssh} ${system_user}@${target} "systemctl --user start container-${container_name}.service"
+  fi
+
+  pad ' · Required container packages exist'
+  if ${ssh} ${target} 'rpm -q podman skopeo'
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · The ${container_name} container exists"
+  TMP_FILE="$(mktemp)"
+  ${ssh} ${target} "su - ${system_user} -c 'podman inspect ${container_name}'" > "${TMP_FILE}"
+  if [ $? -eq 0 ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · The container is using the correct image"
+  if grep -q "${image}" "${TMP_FILE}"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · The container is using the correct image tag"
+  if grep -q "${image}:${tag}" "${TMP_FILE}"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · The container host port is ${local_port}"
+  if grep -w ${local_port} "${TMP_FILE}" | grep -q '"hostPort"'
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · The database user is ${MYSQL_USER}"
+  if grep -qw "MYSQL_USER=${MYSQL_USER}" "${TMP_FILE}"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · The database password is ${MYSQL_PASSWORD}"
+  if grep -qw "MYSQL_PASSWORD=${MYSQL_PASSWORD}" "${TMP_FILE}"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · The database name is ${MYSQL_DATABASE}"
+  if grep -qw "MYSQL_DATABASE=${MYSQL_DATABASE}" "${TMP_FILE}"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · The database root password is ${MYSQL_ROOT_PASSWORD}"
+  if grep -qw "MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}" "${TMP_FILE}"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · The database uses $(basename ${persistent_dir}) for storage"
+  if grep "${persistent_dir}" "${TMP_FILE}" | grep -q '"Source"'
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · The storage is mounted in ${storage}"
+  if grep -w "${storage}" "${TMP_FILE}" | grep -q '"Destination"'
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · SELinux context is set for $(basename ${persistent_dir})"
+  ${ssh} ${target} "stat --format=%C ${persistent_dir}" | grep -q container_file_t
+  if [ $? -eq 0 ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · The systemd unit file exists for the container"
+  if ${ssh} ${target} "test -s /home/${system_user}/.config/systemd/user/container-${container_name}.service"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · The systemd service for the container is enabled"
+  if ${ssh} ${target} "id ${system_user}"
+  then
+    if ${ssh} ${system_user}@${target} "systemctl --user is-enabled container-${container_name}.service"
+    then
+      print_PASS
+    else
+      print_FAIL
+    fi
+  else
+    print_FAIL
+  fi
+
+  pad " · The services for ${system_user} start at boot"
+  ${ssh} ${target} "loginctl show-user ${system_user}" | grep -qi Linger=yes
+  if [ $? -eq 0 ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  rm -f "${TMP_FILE}"
+
+  # Overall grade
+  print_line
+  pad 'Overall lab grade'
+  if [[ ${fail_count} -eq 0 ]]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  print_line
+}
+
+function lab_finish {
+
+  print_header "Cleaning up the lab on ${target}:"
+  host_reachable ${target}
+
+  if ${ssh} ${target} "id ${system_user}"
+  then
+    ${ssh} ${system_user}@${target} "systemctl --user disable --now container-${container_name}.service"
+  fi
+
+  rhel_containers_rm_containers_user ${target} ${system_user}
+  rhel_containers_undeploy_client ${target}
+
+  pad " · Removing ${reqd_package} client from ${target}."
+  cmd1="yum remove -y ${reqd_package}"
+  cmd2="rm -f /home/student/.mysql_history"
+  if ${ssh} ${target} "${cmd1}"; then
+    ${ssh} ${target} "${cmd2}"
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Removing exercise directories on ${target}"
+  ${ssh} ${target} "rm -rf /home/student/.config/systemd ~${system_user}/.config/systemd ${persistent_dir}"
+  print_SUCCESS
+
+  pad " · Reloadind systemd configuration on ${target}"
+  ${ssh} student@${target} "systemctl --user daemon-reload"
+  if ${ssh} ${target} "id ${system_user}"
+  then
+    ${ssh} ${system_user}@${target} "systemctl --user daemon-reload"
+  fi
+  print_SUCCESS
+
+  pad " · Disabling lingering services on ${target}"
+  ${ssh} ${target} "loginctl disable-linger student ; loginctl disable-linger ${system_user}"
+  print_SUCCESS
+
+  rhel_del_user ${target} ${system_user}
+  ${ssh} ${target} "rm -rf /home/${system_user}"
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

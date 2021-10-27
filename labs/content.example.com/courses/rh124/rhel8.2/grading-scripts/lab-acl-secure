@@ -1,0 +1,176 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-acl-secure - Grading script for RH134 ACL Secure Guided Exercise.
+#
+# SYNOPSIS
+#     lab-acl-secure {start|finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start, or 
+#     finish for the RH134 ACL Secure Guided Exercise
+#
+# CHANGELOG
+#   * Wed Mar 27 2019 Adrian Andrade <aandrade@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+work='workstation'
+target1='servera'
+reqd_package='vim-enhanced'
+sharefolder='/shares/content'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start finish)
+
+
+function lab_start {
+
+  print_header 'Starting lab.'
+  print_line
+
+  print_line "Preparing ${target1} for lab exercise work:"
+  print_line
+
+  pad " · Verifying that ${target1} is running: "
+  if host_reachable ${target1}
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Preparing ${target1} for required packages: "
+  ${ssh} ${target1} "yum install -y  ${reqd_package}"
+  print_SUCCESS
+
+  pad " · Creating required groups in ${target1}: "
+  ${ssh} ${target1} "groupadd operators"
+  ${ssh} ${target1} "groupadd consultants"
+  print_SUCCESS
+
+  pad " · Creating required users in ${target1}: "
+  ${ssh} ${target1} "useradd -g operators sysadmin1"
+  ${ssh} ${target1} "useradd -g operators operator1"
+  ${ssh} ${target1} "useradd -g consultants consultant1"
+  ${ssh} ${target1} "useradd -g consultants consultant2"
+  print_SUCCESS
+
+  pad " · Assigning password for users in ${target1}: "
+  ${ssh} ${target1} "echo 'redhat' | passwd --stdin sysadmin1"
+  ${ssh} ${target1} "echo 'redhat' | passwd --stdin operator1"
+  ${ssh} ${target1} "echo 'redhat' | passwd --stdin consultant1"
+  ${ssh} ${target1} "echo 'redhat' | passwd --stdin consultant2"
+  print_SUCCESS
+  
+  pad " · Creating required directories in ${target1}: "
+  ${ssh} ${target1} "mkdir -p /shares/content/server-info"
+  print_SUCCESS
+
+  pad " · Creating required files in ${target1}: "
+  cat << 'EOF' | ${ssh} ${target1}  "cat > /shares/content/loadavg.sh"
+#!/bin/bash
+##############################################################################################################
+##############################################################################################################
+# loadavg     	This tool is intended to resume in screen the CPU's load average data of the machine
+#
+# Version:      1.0.0
+#
+# Author:       Adrian Andrade, <aandrade@redhat.com>
+#               Modified by Adrian Felipe Andrade Rodriguez
+#
+# Created:      09/08/2015
+#
+# Modified:     05/11/2015
+#
+##############################################################################################################
+##############################################################################################################
+/usr/bin/uptime | /usr/bin/awk '{print "ldavg " $(NF-2), $(NF-1), $NF}'
+exit 0
+EOF
+
+  cat << 'EOF' | ${ssh} ${target1}  "cat > /shares/content/servera-loadavg.txt"
+#################################################
+servera.lab.example.com
+#################################################
+Wed Mar 27 18:35:57 EDT 2019
+#################################################
+ldavg 0.10, 0.07, 0.01
+#################################################
+EOF
+  
+  cat << 'EOF' | ${ssh} ${target1}  "cat > /shares/content/serverb-loadavg.txt"
+#################################################
+serverb.lab.example.com
+#################################################
+Wed Mar 25 15:25:19 EDT 2019
+#################################################
+ldavg 0.18, 0.06, 0.05
+#################################################
+EOF
+  
+  ${ssh} ${target1}  "ip address > /shares/content/server-info/servera-net.txt"
+  ${ssh} ${target1}  "lscpu > /shares/content/server-info/servera-cpu.txt"
+  ${ssh} ${target1}  "lsblk > /shares/content/server-info/servera-disks.txt"
+  ${ssh} ${target1}  "free -mh > /shares/content/server-info/servera-ram.txt"
+  
+  print_SUCCESS
+
+
+
+  pad " · Preparing folder/files permissions in ${target1}: "
+  ${ssh} ${target1} "chown -R root:operators /shares/content"
+  ${ssh} ${target1} "chmod -R g+rws,o-rwx /shares/content"
+  ${ssh} ${target1} "chown -R sysadmin1 /shares/content/server-info/*txt"
+  ${ssh} ${target1} "chmod g+rw,g-s /shares/content/server-info/*txt"
+  ${ssh} ${target1} "chown -R operator1 /shares/content/*txt"
+  ${ssh} ${target1} "chmod g+rw,g-s /shares/content/*txt"
+  ${ssh} ${target1} "chown -R sysadmin1 /shares/content/*sh"
+  ${ssh} ${target1} "chmod g-s,g+rwx /shares/content/*sh"
+  print_SUCCESS
+
+  print_line
+
+}
+
+function lab_finish {
+
+  print_header "Completing the lab in ${target1}:"
+  print_line
+  
+  pad " · Cleaning exercise files and folders in ${target1}: "
+  ${ssh} ${target1} "rm -rf /shares"
+  print_SUCCESS
+  pad " · Deleting users in ${target1}: "
+  ${ssh} ${target1} "userdel -r sysadmin1"
+  ${ssh} ${target1} "userdel -r operator1"
+  ${ssh} ${target1} "userdel -r consultant1"
+  ${ssh} ${target1} "userdel -r consultant2"
+  print_SUCCESS
+  pad " · Deleting groups in ${target1}: "
+  ${ssh} ${target1} "groupdel operators"
+  ${ssh} ${target1} "groupdel consultants"
+  print_SUCCESS
+
+  print_line  
+  print_line 'Lab finished.'
+  print_line
+
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

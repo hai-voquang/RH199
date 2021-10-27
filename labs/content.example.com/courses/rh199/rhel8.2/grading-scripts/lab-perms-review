@@ -1,0 +1,177 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-perms-review - grading script for RH124 Controlling Access to Files
+#
+# SYNOPSIS
+#     lab-edit-review {start|grade|finish}
+#
+#        start   - prepare the system for starting the lab
+#        grade   - perform evaluation steps on the system
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start, grading,
+#     or finish for the particular lab of awesomeness.
+#
+# CHANGELOG
+#   * Fri May 17 2019 Saumik Paul <saumik@redhat.com>
+#   - leveraged user and group library functions to simplify the code
+#   * Fri Apr 05 2019 Snehangshu Kamakar <snehk@redhat.com>
+#   - Fixed RH124-203
+#   * Mon Feb 04 2019 Fiona Allen <fallen@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='serverb'
+group='techdocs'
+lab_gid='40000'
+user1='tech1'
+user2='tech2'
+user3='tech3'
+user4='database1'
+user_pw='redhat'
+directory='/home/techdocs'
+#bashrc='/etc/bashrc'
+#bashrc_orig='/etc/bashrc.orig'
+#profile='/etc/profile'
+#profile_orig='/etc/profile.orig'
+
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start grade finish)
+
+
+function lab_start {
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} for lab exercise work:"
+  print_line
+
+  host_reachable ${target}
+  
+
+  # Creating group: ${group}
+  rhel_add_group ${target} ${group} "-g ${lab_gid}"
+
+  # Creating user: ${user1}
+  rhel_add_user ${target} ${user1} ${user_pw} "-G ${group}"
+
+  # Creating user: ${user2}
+  rhel_add_user ${target} ${user2} ${user_pw} "-G ${group}"
+
+  # Creating user: ${user4}
+  rhel_add_user ${target} ${user4} ${user_pw}
+
+  print_line
+}
+
+function lab_grade {
+
+  print_header "Grading the lab:"
+  host_reachable ${target}
+  
+  pad " · Verifying permissions on ${directory}: "
+  if (${ssh} ${target} ls -ld ${directory} | cut -d' ' -f1,4 | grep "^drwxrws---. techdocs$" &> /dev/null)
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying directory: ${directory}"
+  if ${ssh} ${target} [[ -d ${directory} ]]; then
+    print_PASS
+      
+    pad " · Verifying that ${user1} can edit ${directory}: "
+    if ${ssh} tech1@${target} touch ${directory}/grading.txt
+    then
+      print_PASS
+    else
+      print_FAIL
+    fi
+
+    pad " · Verifying that ${user4} cannot edit ${directory}: "
+    if ! ${ssh} database1@${target} touch ${directory}/database.txt
+    then
+      print_PASS
+    else
+      print_FAIL
+    fi
+  else
+    print_FAIL
+  fi  
+
+  pad " · Verifying umask: "
+  if (${ssh} ${target} "su - student -c 'umask'" | grep '0007' )
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+  
+  # Overall grade
+  print_line
+  pad 'Overall lab grade'
+  if [[ ${fail_count} -eq 0 ]]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  print_line
+
+}
+
+function lab_finish {
+
+  print_header "Completing the lab on workstation:"
+  host_reachable ${target}
+  
+  # Deleting user: ${user1}
+  rhel_del_user ${target} ${user1}
+
+  # Deleting user: ${user2}
+  rhel_del_user ${target} ${user2}
+
+  # Deleting user: ${user4}
+  rhel_del_user ${target} ${user4}
+
+  # Deleting group: ${group}
+  rhel_del_group ${target} ${group}
+
+  pad " · Deleting ${directory}: "
+  if ${ssh} ${target} [[ -d ${directory} ]]
+  then
+    ${ssh} ${target} "rm -rf ${directory}"
+    print_SUCCESS
+  else
+    print_SUCCESS
+  fi
+
+  pad " · Setting umask to default: "
+  if ${ssh} ${target} rm -f /etc/profile.d/local-umask.sh
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  print_header 'Lab finished.'
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

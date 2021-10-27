@@ -1,0 +1,206 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-rhcsa-rh124-review4 - grading script for RH124 Comprehensive Review Managing Networks 
+#
+# SYNOPSIS
+#     lab-rhcsa-rh124-review4 {start|grade|finish}
+#
+#        start   - prepare the system for starting the lab
+#	 grade   - perform evaluation steps on the system 
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start
+#     or finish for the Comprehensive Review Managing Networks. 
+#
+# CHANGELOG
+#   * Thu Mar 12 2019 Saumik Paul <saumik@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='workstation'
+targetb='serverb'
+comp_review4_ifcfg='/tmp/ifcfg-orig'
+comp_review4_hostname='/tmp/hostname.txt'
+comp_review4_hosts='/tmp/hosts-orig'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start grade finish)
+
+
+function lab_start {
+
+  reqd_package='NetworkManager'        # Just an example
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${targetb} for lab exercise work:"
+  print_line
+  host_reachable ${targetb}
+
+
+  # Check for lab prerequisites (perhaps a required package?).
+  if ! ${ssh} ${targetb} "rpm -q --quiet ${reqd_package}"
+  then
+    pad " · Error - ${reqd_package} is not installed on ${targetb}"
+    print_FAIL
+  else
+    pad " · Backing up original network configuration files on ${targetb}"
+    my_nic=$(get_nicname ${targetb} 1)
+    my_nic_hwaddr=$(${ssh} ${targetb} "cat /sys/class/net/${my_nic}/address")
+    my_ifcfg_file=$(${ssh} ${targetb} "grep -i -H -e ${my_nic_hwaddr} -e ${my_nic} /etc/sysconfig/network-scripts/*" | grep -v static | cut -d: -f1)
+    if ${ssh} ${targetb} "cp ${my_ifcfg_file} ${comp_review4_ifcfg}" &&
+       ${ssh} ${targetb} "test -s ${comp_review4_ifcfg}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Recording the original hostname on ${targetb}"
+    ${ssh} ${targetb} "hostname > ${comp_review4_hostname}"
+    if ${ssh} ${targetb} "test -s ${comp_review4_hostname}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Backing up the original /etc/hosts file on ${targetb}"
+    ${ssh} ${targetb} "cp /etc/hosts ${comp_review4_hosts}"
+    if ${ssh} ${targetb} "test -s ${comp_review4_hosts}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    print_line
+  fi
+}
+
+function lab_grade {
+
+  print_header "Grading the student's work on ${targetb}:"
+  host_reachable ${targetb}
+
+  # Put in the steps to grade the lab (use print_PASS or print_FAIL)
+
+  pad " · Verifying the static connection on ${targetb}"
+  if ${ssh} ${targetb} "nmcli connection show | grep static"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying DNS on ${targetb}"
+  if ${ssh} ${targetb} "nmcli connection show static | grep ipv4.dns | grep 172.25.250.254"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying new IP addresses on ${targetb}"
+  if ${ssh} ${targetb} "nmcli connection show static | grep 172.25.250.211 | grep 172.25.250.111"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying the canonical name on ${targetb}"
+  if ${ssh} ${targetb} "ping -c 2 client-review4"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying the hostname on ${targetb}"
+  if ${ssh} ${targetb} "hostname | grep server-review4.lab4.example.com"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+
+  # Overall grade
+  print_line
+  pad 'Overall lab grade'
+  if [[ ${fail_count} -eq 0 ]]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  print_line
+}
+
+
+function lab_finish {
+
+  print_header "Completing the lab on ${targetb}:"
+  host_reachable ${targetb}
+
+  pad " · Removing the static connection from ${targetb}"
+  ${ssh} ${targetb} "nmcli connection delete static"
+  if ! ${ssh} ${targetb} "nmcli connection show | grep static"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Restoring original hostname on ${targetb}"
+  ${ssh} ${targetb} "hostnamectl set-hostname ${targetb}.lab.example.com" &&
+  if ${ssh} ${targetb} "hostname | grep ${targetb}.lab.example.com"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Restoring original /etc/hosts on ${targetb}"
+  ${ssh} ${targetb} "cp ${comp_review4_hosts} /etc/hosts"
+  if ! ${ssh} ${targetb} "grep client-review4 /etc/hosts"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Removing temporary files from ${targetb}"
+  ${ssh} ${targetb} "rm -f ${comp_review4_ifcfg} ${comp_review4_hostname} ${comp_review4_hosts}"
+  if ! ${ssh} ${targetb} "test -e ${comp_review4_ifcfg}" &&
+     ! ${ssh} ${targetb} "test -e ${comp_review4_hostname}" &&
+     ! ${ssh} ${targetb} "test -e ${comp_review4_hosts}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

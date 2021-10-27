@@ -1,0 +1,57 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-software-yum - Start script for Guided Exercise Installing and
+#                        Updating Software with yum
+#
+# SYNOPSIS
+#     lab-software-yum {start|finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab cleanup
+# DESCRIPTION
+#     This script verifies servera and serverb is accessible.
+#
+# CHANGELOG
+#   * Wed Feb 13 2019 Marc Kesler <rkesler@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target1='servera'
+target2='serverb'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start)
+
+
+function lab_start {
+
+  print_header 'Starting lab.'
+  
+  print_line "Checking ${target1} and ${target2} for lab exercise work:"
+  print_line
+
+  pad " · Check ${target1}"
+  host_reachable ${target1}
+  print_SUCCESS
+
+  pad " · Check ${target2}"
+  host_reachable ${target2}
+  print_SUCCESS
+}
+
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"
+

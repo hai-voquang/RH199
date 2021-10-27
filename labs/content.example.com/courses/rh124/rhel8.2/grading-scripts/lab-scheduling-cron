@@ -1,0 +1,128 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-scheduling-cron - grading script for RH124 Scheduling Recurring Jobs with Cron
+#
+# SYNOPSIS
+#     lab-scheduling-cron {start|finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start
+#     or finish for the Scheduling Recurring User Jobs Guided Exercise.
+#
+# CHANGELOG
+#   * Thu Mar 22 2019 Saumik Paul <saumik@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='servera'
+ge_user='student'
+ge_user_output_file='/home/student/my_first_cron_job.txt'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start finish)
+
+
+function lab_start {
+
+  reqd_package='cronie'        # Just an example
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} for lab exercise work:"
+  print_line
+  host_reachable ${target}
+
+
+  # Check for lab prerequisites (perhaps a required package?).
+  if ! ${ssh} ${target} "rpm -q --quiet ${reqd_package}"
+  then
+    pad " · Error - ${reqd_package} is not installed on ${target}"
+    print_FAIL
+  else
+    pad " · Ensuring empty crontab for ${ge_user} on ${target}"
+    if ! ${ssh} ${target} "crontab -l -u ${ge_user}"
+    then
+      print_SUCCESS
+    else
+      if ${ssh} ${target} "crontab -r -u ${ge_user}" &&
+	 ! ${ssh} ${target} "crontab -l -u ${ge_user}"
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    fi
+
+    pad " · Ensuring no output file for cronjob exists on ${target}"
+    if ! ${ssh} ${target} "test -e ${ge_user_output_file}"
+    then
+      print_SUCCESS
+    else
+      if ${ssh} ${target} "rm -f ${ge_user_output_file}" &&
+	 ! ${ssh} ${target} "test -e ${ge_user_output_file}"
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    fi
+
+    print_line
+  fi
+}
+
+function lab_finish {
+
+  print_header "Completing the lab on ${target}:"
+  host_reachable ${target}
+
+  pad " · Removing cronjobs for ${ge_user} from ${target}"
+  if ! ${ssh} ${target} "crontab -l -u ${ge_user}"
+  then
+    print_SUCCESS
+  else
+    if ${ssh} ${target} "crontab -r -u ${ge_user}" &&
+       ! ${ssh} ${target} "crontab -l -u ${ge_user}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  pad " · Removing the output file for cronjob from ${target}"
+  if ! ${ssh} ${target} "test -e ${ge_user_output_file}"
+  then
+    print_SUCCESS
+  else
+    if ${ssh} ${target} "rm -f ${ge_user_output_file}" &&
+       ! ${ssh} ${target} "test -e ${ge_user_output_file}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

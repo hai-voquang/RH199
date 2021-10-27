@@ -1,0 +1,164 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-users-group-manage - grading script for RH124 Managing Local Group Accounts
+#
+# SYNOPSIS
+#     lab-users-group-manage {start|finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start
+#     or finish for the Managing Local Group Accounts Guided Exercise. 
+#
+# CHANGELOG
+#   * Tue Jan 24 2019 Saumik Paul <saumik@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='servera'
+ge_opuser1='operator1'
+ge_opuser2='operator2'
+ge_opuser3='operator3'
+ge_admuser1='sysadmin1'
+ge_admuser2='sysadmin2'
+ge_admuser3='sysadmin3'
+ge_user_pw='redhat'
+ge_opgrp='operators'
+ge_admgrp='admin'
+passwd='/etc/passwd'
+shadow='/etc/shadow'
+group='/etc/group'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start finish)
+
+
+function lab_start {
+
+  reqd_package='shadow-utils'        # Just an example
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} for lab exercise work:"
+  print_line
+  host_reachable ${target}
+
+
+  # Check for lab prerequisites (perhaps a required package?).
+  if ! ${ssh} ${target} "rpm -q --quiet ${reqd_package}"
+  then
+    pad " · Error - ${reqd_package} is not installed on ${target}"
+    print_FAIL
+  else
+    pad " · Ensuring all operators exist on ${target}"
+    if ${ssh} ${target} "grep ${ge_opuser1} ${passwd} ${shadow}" &&
+       ${ssh} ${target} "grep ${ge_opuser2} ${passwd} ${shadow}" &&
+       ${ssh} ${target} "grep ${ge_opuser3} ${passwd} ${shadow}" 
+    then
+      print_SUCCESS
+    elif ${ssh} ${target} "userdel -r ${ge_opuser1}; useradd ${ge_opuser1} && echo ${ge_user_pw} | passwd --stdin ${ge_opuser1}" &&
+	 ${ssh} ${target} "userdel -r ${ge_opuser2}; useradd ${ge_opuser2} && echo ${ge_user_pw} | passwd --stdin ${ge_opuser2}" &&
+	 ${ssh} ${target} "userdel -r ${ge_opuser3}; useradd ${ge_opuser3} && echo ${ge_user_pw} | passwd --stdin ${ge_opuser3}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Ensuring all sysadmins exist on ${target}"
+    if ${ssh} ${target} "useradd ${ge_admuser1} && echo ${ge_user_pw} | passwd --stdin ${ge_admuser1}" &&
+       ${ssh} ${target} "useradd ${ge_admuser2} && echo ${ge_user_pw} | passwd --stdin ${ge_admuser2}" &&
+       ${ssh} ${target} "useradd ${ge_admuser3} && echo ${ge_user_pw} | passwd --stdin ${ge_opuser3}"
+    then
+      print_SUCCESS
+    else
+      if ${ssh} ${target} "grep ${ge_admuser1} ${passwd} ${shadow}" &&
+         ${ssh} ${target} "grep ${ge_admuser2} ${passwd} ${shadow}" &&
+         ${ssh} ${target} "grep ${ge_admuser3} ${passwd} ${shadow}"
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    fi
+
+    print_line
+  fi
+}
+
+function lab_finish {
+
+  print_header "Completing the lab on ${target}:"
+  host_reachable ${target}
+
+  pad " · Deleting the operators from ${target}"
+  ${ssh} ${target} "userdel -r ${ge_opuser1}" 
+  ${ssh} ${target} "userdel -r ${ge_opuser2}" 
+  ${ssh} ${target} "userdel -r ${ge_opuser3}"
+  if ! ${ssh} ${target} "getent user ${ge_opuser1}" &&
+     ! ${ssh} ${target} "getent user ${ge_opuser2}" &&
+     ! ${ssh} ${target} "getent user ${ge_opuser3}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi    
+
+  pad " · Deleting the sysadmins from ${target}"
+  ${ssh} ${target} "userdel -r ${ge_admuser1}" 
+  ${ssh} ${target} "userdel -r ${ge_admuser2}" 
+  ${ssh} ${target} "userdel -r ${ge_admuser3}"
+  if ! ${ssh} ${target} "getent user ${ge_admuser1}" &&
+     ! ${ssh} ${target} "getent user ${ge_admuser2}" &&
+     ! ${ssh} ${target} "getent user ${ge_admuser3}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi    
+
+  pad " · Deleting the ${ge_opgrp} group from ${target}"
+  if ${ssh} ${target} "groupdel ${ge_opgrp}" || ! ${ssh} ${target} "getent group ${ge_opgrp}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi    
+
+  pad " · Deleting the ${ge_admgrp} group from ${target}"
+  if ${ssh} ${target} "groupdel ${ge_admgrp}" || ! ${ssh} ${target} "getent group ${ge_admgrp}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi    
+
+  pad " · Revoking the administrative rights of ${ge_admgrp} on ${target}"
+  if ${ssh} ${target} "rm -f /etc/sudoers.d/admin"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

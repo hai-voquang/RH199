@@ -1,0 +1,134 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-log-configure - grading script for RH124 Reviewing Syslog Files
+#
+# SYNOPSIS
+#     lab-log-configure {start|finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start
+#     or finish for the particular lab of awesomeness.
+#
+# CHANGELOG
+#   * Wed Feb 13 2019 Saumik Paul <saumik@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+targeta='servera'
+targetb='serverb'
+#known_hosts=/home/student/.ssh/known_hosts
+#ge_user1='operator1'
+#ge_user2='operator2'
+#ge_user3='operator3'
+#ge_user_pw='redhat'
+#passwd='/etc/passwd'
+#shadow='/etc/shadow'
+log_debug_conf='/etc/rsyslog.d/debug.conf'
+log_debug_file='/var/log/messages-debug'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start finish)
+
+
+function lab_start {
+
+  reqd_package='rsyslog'        # Just an example
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${targeta} for lab exercise work:"
+  print_line
+  host_reachable ${targeta}
+
+
+  # Check for lab prerequisites (perhaps a required package?).
+  if ! ${ssh} ${targeta} "rpm -q --quiet ${reqd_package}"
+  then
+    pad " · Error - ${reqd_package} is not installed on ${targeta}"
+    print_FAIL
+  else
+    pad " · Ensuring ${log_debug_conf} does not exist on ${targeta}"
+    if ! ${ssh} ${targeta} "test -e ${log_debug_conf}"
+    then
+      print_SUCCESS
+    else
+      if ${ssh} ${targeta} "rm -f ${log_debug_conf}" &&
+         ! ${ssh} ${targeta} "test -e ${log_debug_conf}" 
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    fi
+
+    pad " · Ensuring ${log_debug_file} does not exist on ${targeta}"
+    if ! ${ssh} ${targeta} "test -e ${log_debug_file}"
+    then
+      print_SUCCESS
+    else
+      if ${ssh} ${targeta} "rm -f ${log_debug_file}" &&
+         ! ${ssh} ${targeta} "test -e ${log_debug_file}" 
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    fi
+
+    print_line
+  fi
+}
+
+function lab_finish {
+
+  print_header "Completing the lab on ${targeta}:"
+  host_reachable ${target}
+
+  pad " · Deleting ${log_debug_conf} from ${targeta}"
+  if ${ssh} ${targeta} "rm -f ${log_debug_conf}"
+  then
+    print_SUCCESS
+  else
+    if ! ${ssh} ${targeta} "test -e ${log_debug_conf}" 
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  pad " · Deleting ${log_debug_file} from ${targeta}"
+  if ${ssh} ${targeta} "rm -f ${log_debug_file}"
+  then
+    print_SUCCESS
+  else
+    if ! ${ssh} ${targeta} "test -e ${log_debug_file}" 
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

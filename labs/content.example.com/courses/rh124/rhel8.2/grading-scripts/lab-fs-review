@@ -1,0 +1,198 @@
+#!/bin/bash
+#
+# Copyright 2019, 2020 Red Hat, Inc.
+#
+# NAME
+#     lab-fs-review - grading script for RH124 Lab
+#                     Accessing Linux File Systems
+#
+# SYNOPSIS
+#     lab-fs-review {start|grade|finish}
+#
+#        start   - prepare the system for starting the lab
+#        grade   - perform evaluation steps on the system
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start, grading
+#     or finish for the Accessing Linux File Systems Lab.
+#
+# CHANGELOG
+#   * Wed Aug 26 2020 Herve Quatremain <hquatrem@redhat.com>
+#   - Fixing Jira RH124-544
+#   * Wed Feb 21 2019 Snehangshu Karmakar <snehk@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='serverb'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start grade finish)
+
+devname="/dev/vdb"
+partname="${devname}1"
+dirname="/mnt/freespace"
+
+diskusage="/mnt/freespace/results.txt"
+search1="/mnt/freespace/search1.txt"
+search2="/mnt/freespace/search2.txt"
+
+function lab_start {
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} for lab exercise work:"
+  print_line
+
+  pad " · Verifying server is reachable: ${target}"
+  host_reachable ${target}
+  print_SUCCESS
+
+  pad " · Ensuring directory does not exits: ${dirname}"
+  if ${ssh} ${target} [[ ! -d ${dirname} ]]; then
+    print_SUCCESS
+  else
+    ${ssh} ${target} "rm -rf ${dirname}"
+    print_SUCCESS
+  fi
+
+  pad " · Creating new partition: ${devname}"
+  if ${ssh} ${target} [[ -b "${devname}" ]]; then
+    disksize=$(${ssh} ${target} "parted -s ${devname} print 2> /dev/null |awk '/^Disk/ {print \$3}'|sed 's/[Mm][Bb]//'")
+    for partition in $(${ssh} ${target} "parted -s ${devname} print 2> /dev/null | awk '/^ / {print \$1}'")
+    do
+      ${ssh} ${target} "umount ${devname}${partition}"
+      ${ssh} ${target} "parted -s ${devname} rm ${partition}"
+    done
+    if ${ssh} ${target} "parted -s ${devname} mklabel msdos mkpart primary 0 ${disksize}"; then
+      if ${ssh} ${target} "partprobe"; then
+        if ${ssh} ${target} "mkfs.xfs -f ${partname}"; then
+          print_SUCCESS
+        else
+          print_FAIL
+          print_line "mkfs failed"
+        fi
+      else
+        print_FAIL
+        print_line "partprobe failed"
+      fi
+    else
+      print_FAIL
+      print_line "parted failed"
+    fi
+  else
+    print_FAIL
+    print_line "No secondary disk device recognized."
+  fi
+  print_line
+}
+
+function lab_grade {
+
+  print_header "Grading the student's work on ${target}:"
+  host_reachable ${target}
+
+  pad " · Verifying ${partname} is mounted:"
+  if ${ssh} ${target} "lsblk -o MOUNTPOINT /dev/vdb1 | grep ${dirname}"; then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying disk usage report: /usr/share"
+  if ${ssh} ${target} [[ -f ${diskusage} ]]; then
+    ${ssh} ${target} "du /usr/share > /tmp/usage.txt"
+    if ${ssh} ${target} "cmp --silent /tmp/usage.txt ${diskusage}"; then
+      print_PASS
+    else
+      print_FAIL
+    fi
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying search result: rsyslog.conf"
+  if ${ssh} ${target} [[ -f ${search1} ]]; then
+    ${ssh} ${target} "locate rsyslog.conf > /tmp/search1.txt"
+    if ${ssh} ${target} "cmp --silent /tmp/search1.txt ${search1}"; then
+      print_PASS
+    else
+      print_FAIL
+    fi
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying search results: /usr/share(>50M & <100M)"
+  if ${ssh} ${target} [[ -f ${search2} ]]; then
+    ${ssh} ${target} "find /usr/share -size +50M -size -100M > /tmp/search2.txt"
+    if ${ssh} ${target} "cmp --silent /tmp/search2.txt ${search2}"; then
+      print_PASS
+    else
+      print_FAIL
+    fi
+  else
+    print_FAIL
+  fi
+
+  # Overall grade
+  print_line
+  pad 'Overall lab grade'
+  if [[ ${fail_count} -eq 0 ]]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  print_line
+}
+
+function lab_finish {
+
+  print_header "You have completed attempting the guided exercise."
+  host_reachable ${target}
+
+  pad " · Deleting directory/files: ${dirname}"
+  if ${ssh} ${target} [[ ! -d ${dirname} ]]; then
+    print_SUCCESS
+  else
+    ${ssh} ${target} "rm -rf ${dirname} \
+      /tmp/diskusage.txt \
+      /tmp/search1.txt \
+      /tmp/search2.txt"
+    print_SUCCESS
+  fi
+
+  pad " · Deleting partitions: ${devname}"
+  if ${ssh} ${target} [[ -b "${devname}" ]]; then
+    for partition in $(${ssh} ${target} "parted -s ${devname} print 2> /dev/null | awk '/^ / {print \$1}'")
+    do
+      ${ssh} ${target} "umount ${devname}${partition}"
+      ${ssh} ${target} "parted -s ${devname} rm ${partition}"
+    done
+    if ! ${ssh} ${target} "parted -s ${devname} print 2> /dev/null | awk '/^ / {print \$1}' | grep ${partname}"; then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  else
+    print_FAIL
+    print_line "No secondary disk device recognized."
+  fi
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

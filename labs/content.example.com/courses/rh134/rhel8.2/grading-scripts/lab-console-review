@@ -1,0 +1,281 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-console-review - Grading script for RH134 Console
+#                          Review Lab.
+#
+# SYNOPSIS
+#     lab-console-review {start|grade|finish}
+#
+#        start   - prepare the system for starting the lab
+#        grade   - performs grading for the labb
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start, grade or 
+#     finish for the RH134 Console Review Lab.
+#
+# CHANGELOG
+#   * Tue May 28 2019 Michael Phillips <miphilli@redhat.com>
+#   - added an overall lab grade block based on End-to-End QA feedback
+#   * Wed Mar 20 2019 Adrian Andrade <aandrade@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+work='workstation'
+target1='servera'
+target2='serverb'
+reqd_package='vim-enhanced util-linux'
+secure='/var/log/secure'
+output1='/home/student/output-servera'
+output2='/home/student/output-serverb'
+bashlab='/home/student/bin/bash-lab'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start grade finish)
+
+
+function lab_start {
+
+  print_header 'Starting lab.'
+  print_line
+
+  print_line "Preparing ${work}, ${target1} and ${target2} for lab exercise work:"
+  print_line
+
+  pad " · Verifying that ${target1} is running: "
+  if host_reachable ${target1}
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying that ${target2} is running: "
+  if host_reachable ${target2}
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+  
+  pad " · Preparing ${target1} for required packages: "
+  ${ssh} ${target1} "yum install -y  ${reqd_package}"
+  print_SUCCESS
+
+  pad " · Preparing ${target2} for required packages: "
+  ${ssh} ${target2} "yum install -y  ${reqd_package}"
+  print_SUCCESS
+
+  pad " · Preparing ${work} for required packages: "
+  ${ssh} ${work} "yum install -y  ${reqd_package}"
+  print_SUCCESS
+  
+  pad " · Preparing sudo in ${target1}: "
+  ${ssh} ${target1} "echo 'student      ALL=(ALL)       NOPASSWD: ALL' >> /etc/sudoers"
+  print_SUCCESS
+
+  pad " · Preparing sudo in ${target2}: "
+  ${ssh} ${target2} "echo 'student      ALL=(ALL)       NOPASSWD: ALL' >> /etc/sudoers"
+  print_SUCCESS
+
+  pad " · Prepare ${secure} in ${target1}: "
+  ${ssh} ${target1} "> /var/log/secure"
+  sshpass -p Example123 ssh -o PreferredAuthentications=password operator1@${target1}
+  sshpass -p Example123 ssh -o PreferredAuthentications=password sysadmin1@${target1}
+  sshpass -p Example123 ssh -o PreferredAuthentications=password manager1@${target1}
+  print_SUCCESS
+  
+  pad " · Prepare ${secure} in ${target2}: "
+  ${ssh} ${target2} "> /var/log/secure"
+  sshpass -p Example123 ssh -o PreferredAuthentications=password operator1@${target2}
+  sshpass -p Example123 ssh -o PreferredAuthentications=password sysadmin1@${target2}
+  sshpass -p Example123 ssh -o PreferredAuthentications=password manager1@${target2}
+  print_SUCCESS
+
+  print_line
+
+}
+
+function lab_grade {
+
+  print_header "Grading the lab:"
+  print_line
+
+  pad " · Verifying that the script exists: "
+  if [ -e /home/student/bin/bash-lab ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying that the script is executable: "
+  if [ -x /home/student/bin/bash-lab ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying that the script is using a loop: "
+  if egrep 'for|while' /home/student/bin/bash-lab
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying that the output file for ${target1} exists: "
+  if [ -e /home/student/output-servera ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+  
+  pad " · Verifying that the output file for ${target2} exists: "
+  if [ -e /home/student/output-serverb ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying hostnames in output file for ${target1}: "
+  if egrep 'servera' ${output1}
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying hostnames in output file for ${target2}: "
+  if egrep 'serverb' ${output2}
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+  
+  pad " · Verifying CPU data required in output file for ${target1}: "
+  if [ $(egrep '^CPU' ${output1} | wc -l) -eq 4 ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying CPU data required in output file for ${target2}: "
+  if [ $(egrep '^CPU' ${output2} | wc -l) -eq 4 ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying CONFIGFILE filtered content for ${target1}: "
+  if [[ $(egrep '^SELINUX=' ${output1}) ]] && [[ $(egrep '^SELINUXTYPE=' ${output1}) ]]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying CONFIGFILE filtered content for ${target2}: "
+  if [[ $(egrep '^SELINUX=' ${output2}) ]] && [[ $(egrep '^SELINUXTYPE=' ${output2}) ]]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying LOGFILE filtered content for ${target1}: "
+  if [[ $(egrep 'Failed password' ${output1}) ]] && [[ $(egrep 'operator1' ${output1}) ]] && [[ $(egrep 'sysadmin1' ${output1}) ]] && [[ $(egrep 'manager1' ${output1}) ]]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying LOGFILE filtered content for ${target2}: "
+  if [[ $(egrep 'Failed password' ${output2}) ]] && [[ $(egrep 'operator1' ${output2}) ]] && [[ $(egrep 'sysadmin1' ${output2}) ]] && [[ $(egrep 'manager1' ${output2}) ]]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying comment lines in output file for ${target1}: "
+  if [ $(grep "^#####$" ${output1} | wc -l) -eq 4 ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+  
+
+  pad " · Verifying comment lines in output file for ${target2}: "
+  if [ $(grep "^#####$" ${output2} | wc -l) -eq 4 ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  # Overall grade
+  print_line
+  pad 'Overall lab grade'
+  if [[ ${fail_count} -eq 0 ]]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  print_line
+}
+
+function lab_finish {
+
+  print_header "Completing the lab on ${work}, ${target1} and ${target2}:"
+  print_line
+  
+  pad " · Cleaning exercise output files in ${work}: "
+  rm ${output1} ${output2}
+# REFACTOR: bash-lab passes if grading is ran after finish
+#           Removing the bin directory to clean completely 
+  rm -rf /home/student/bin
+  print_SUCCESS
+  pad " · Restoring sudoers file in ${target1}: "
+  ${ssh} ${target1} "sed -i '/^student/ d' /etc/sudoers"
+  print_SUCCESS
+  pad " · Restoring sudoers file in ${target2}: "
+  ${ssh} ${target2} "sed -i '/^student/ d' /etc/sudoers"
+  print_SUCCESS
+  pad " · Clean ${secure} in ${target1}: "
+  ${ssh} ${target1} "> /var/log/secure"
+  print_SUCCESS
+  pad " · Clean ${secure} in ${target2}: "
+  ${ssh} ${target2} "> /var/log/secure"
+  print_SUCCESS
+
+  print_line  
+  print_line 'Lab finished.'
+  print_line
+
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

@@ -1,0 +1,228 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-edit-review - grading script for RH124 Creating, Viewing, and Editing Text Files 
+#
+# SYNOPSIS
+#     lab-edit-review {start|grade|finish}
+#
+#        start   - prepare the system for starting the lab
+#        grade   - perform evaluation steps on the system
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start, grading,
+#     or finish for the Creating, Viewing, and Editing Text Files lab.
+#
+# CHANGELOG
+#   * Tue May 28 2019 Victor Costea <vcostea@redhat.com>
+#   - Modified start, grade, and finish scripts
+#   - Added code to create ~/Documents if not logged into graphical console
+#   * Tue Jan 22 2019 Fiona Allen <fallen@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='servera'
+targetw='workstation'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start grade finish)
+
+
+function lab_start {
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing workstation for lab exercise work:"
+  print_line
+
+  pad " · Verifying that ${target} is running: "
+  if host_reachable ${target}
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+## E2E QA New
+#  Checks for existent of ~/Documents; If students do not log in to the
+#  graphical console the ~/Documents directory isn't created
+  pad " · Creating lab.txt: "
+  if [ -d /home/student/Documents ]
+  then
+    touch /home/student/Documents/lab_review.txt
+    chown -R student:student /home/student/Documents
+    print_SUCCESS
+  elif [ ! -d /home/student/Documents ]
+  then
+    mkdir /home/student/Documents
+    touch /home/student/Documents/lab_review.txt
+    chown -R student:student /home/student/Documents
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  print_line
+}
+
+function lab_grade {
+
+  print_header "Grading the student's work on ${targetw}:"
+
+  pad ' · Verifying that the file exists: '
+  if [ -f editing_final_lab.txt ]
+  then
+    print_PASS
+
+    pad " · Verifying that the first 3 lines are removed: "
+    if  cat editing_final_lab.txt | grep total
+    then
+      print_FAIL
+    else
+      print_PASS
+    fi
+
+    pad " · Verifying permissions column is removed: "
+    if cat editing_final_lab.txt | grep  \\-rw\\-r\\-\\-r\\-\\- 
+    then
+      print_FAIL
+    else
+      print_PASS
+    fi
+
+    pad " · Verifying group column is removed: "
+    if cat editing_final_lab.txt | grep 'student student'
+    then
+      print_FAIL
+    else
+      print_PASS
+    fi
+
+    pad " · Verifying time column is removed: "
+    if cat editing_final_lab.txt | grep ':'
+    then
+      print_FAIL
+    else
+      print_PASS
+    fi
+
+    pad " · Verifying Desktop and Public lines are removed: "
+    if cat editing_final_lab.txt | grep Desktop
+    then
+      if cat editing_final_lab.txt | grep Public
+      then
+        print_FAIL
+      fi
+    else
+      print_PASS
+    fi
+
+    pad " · Verifying dashed line is added: "
+    if cat editing_final_lab.txt | grep \\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-
+    then
+      print_PASS
+    else
+      print_FAIL
+    fi
+
+    pad " · Verifying directory listing added: "
+    if cat editing_final_lab.txt | grep lab_review.txt
+    then
+      print_PASS
+    else
+      print_FAIL
+    fi
+
+  else
+    print_FAIL
+  fi
+
+  # Overall grade
+  print_line
+  pad 'Overall lab grade'
+  if [[ ${fail_count} -eq 0 ]]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  print_line
+
+}
+
+function lab_finish {
+
+  print_header "Completing the lab on workstation:"
+  host_reachable ${target}
+
+## E2E QA Quick fix to stablize the finish process.
+#         All work is done on workstation
+#
+#   pad " · Removing lab files: "
+#   if ssh ${target} [[ ! -f  editing_final_lab*.txt ]]
+#   then
+#    print_SUCCESS
+#    elif ssh ${target} rm editing_final_lab*.txt
+#    then 
+#      print_SUCCESS
+#    else
+#      print_FAIL
+#   fi
+#
+#   pad " · Removing lab.txt: "
+#   if ssh ${target} [[ ! -f Documents/lab_review.txt ]]
+#   then
+#     print_SUCCESS
+#     elif
+#       ssh ${target} rm Documents/lab_review.txt
+#     then
+#       print_SUCCESS
+#     else
+#       print_FAIL
+#   fi
+
+## E2E QA: Modified to solve finish script issues
+   pad " · Removing lab files: "
+   if "[[ ! -f  /home/student/editing_final_lab*.txt ]]"
+   then
+    print_SUCCESS
+    elif rm -f /home/student/editing_final_lab*.txt
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+   fi
+
+## E2E QA: Modified to solve finish script issues
+   pad " · Removing lab.txt: "
+   if "[[ ! -f /home/student/Documents/lab_review.txt ]]"
+   then
+     print_SUCCESS
+     elif rm -f /home/student/Documents/lab_review.txt
+     then
+       print_SUCCESS
+     else
+       print_FAIL
+   fi
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

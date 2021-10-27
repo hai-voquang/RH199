@@ -1,0 +1,72 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-files-manage - grading script for RH124 Guided Exercise
+#                        Managing Files Using Command-Line Tools
+#
+# SYNOPSIS
+#     lab-files-manage {start|finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start,
+#     or finish for the Managing Files Using Command-Line Tools 
+#     Guided Exercise.
+#
+# CHANGELOG
+#   * Tue May 28 2019 George Hacker <ghacker@redhat.com>
+#   - correct bug that removes entire student home directory
+#   * Tue Jan 22 2019 Victor Costea <vcostea@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='servera'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start finish)
+
+function lab_start {
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} for lab exercise work:"
+  print_line
+
+  # Check for lab prerequisites.
+  pad " · Check ${target}"
+  host_reachable ${target}
+  print_SUCCESS
+
+  print_line
+}
+
+function lab_finish {
+
+  print_header "You have completed attempting the guided exercise."
+  host_reachable ${target}
+
+  pad ' · Remove exercise files.'
+  cmd1='rm -rf /home/student/{Music,Pictures,Videos}'
+  ${ssh} student@${target} "${cmd1}"
+  print_SUCCESS
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

@@ -1,0 +1,110 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-services-control - grading script for RH124 Guided Exercise
+#                             Controlling System Services
+#
+# SYNOPSIS
+#     lab-services-control {start|finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start,
+#     or finish for the Controlling System Services Guided Exercise.
+#
+# CHANGELOG
+#   * Wed Feb 07 2019 Snehangshu Karmakar <snehk@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='servera'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start finish)
+
+srvc1="sshd"
+srvc2="chronyd"
+
+function lab_start {
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} for lab exercise work:"
+  print_line
+
+  pad " · Verifying server is reachable: ${target}"
+  host_reachable ${target}
+  print_SUCCESS
+
+  pad " · Ensuring enabled/started: ${srvc1}"
+  srvc1_enabled=$(${ssh} ${target} "systemctl is-enabled ${srvc1}")
+  srvc1_active=$(${ssh} ${target} "systemctl is-active ${srvc1}")
+  if [[ ${srvc1_enabled} == "enabled" && ${srvc1_active} == "active" ]]; then
+    print_SUCCESS
+  else
+    ${ssh} ${target} "systemctl enable ${srvc1}"
+    ${ssh} ${target} "systemctl start ${srvc1}"
+    print_SUCCESS
+  fi
+
+  pad " · Ensuring enabled/started: ${srvc2}"
+  srvc2_enabled=$(${ssh} ${target} "systemctl is-enabled ${srvc2}")
+  srvc2_active=$(${ssh} ${target} "systemctl is-active ${srvc2}")
+  if [[ ${srvc2_enabled} == "enabled" && ${srvc2_active} == "active" ]]; then
+    print_SUCCESS
+  else
+    ${ssh} ${target} "systemctl enable ${srvc2}"
+    ${ssh} ${target} "systemctl start ${srvc2}"
+    print_SUCCESS
+  fi
+
+  print_line
+}
+
+function lab_finish {
+
+  print_header "You have completed attempting the guided exercise."
+  host_reachable ${target}
+
+  pad " · Ensuring enabled/started on ${target}: ${srvc1}"
+  srvc1_enabled=$(${ssh} ${target} "systemctl is-enabled ${srvc1}")
+  srvc1_active=$(${ssh} ${target} "systemctl is-active ${srvc1}")
+  if [[ ${srvc1_enabled} == "enabled" && ${srvc1_active} == "active" ]]; then
+    print_SUCCESS
+  else
+    ${ssh} ${target} "systemctl enable ${srvc1}"
+    ${ssh} ${target} "systemctl start ${srvc1}"
+    print_SUCCESS
+  fi
+
+  pad " · Ensuring enabled/started on ${target}: ${srvc2}"
+  srvc2_enabled=$(${ssh} ${target} "systemctl is-enabled ${srvc2}")
+  srvc2_active=$(${ssh} ${target} "systemctl is-active ${srvc2}")
+  if [[ ${srvc2_enabled} == "enabled" && ${srvc2_active} == "active" ]]; then
+    print_SUCCESS
+  else
+    ${ssh} ${target} "systemctl enable ${srvc2}"
+    ${ssh} ${target} "systemctl start ${srvc2}"
+    print_SUCCESS
+  fi
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

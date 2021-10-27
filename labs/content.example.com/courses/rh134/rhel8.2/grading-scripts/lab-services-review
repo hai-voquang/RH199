@@ -1,0 +1,161 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-services-review - grading script for RH124 Lab
+#                           Controlling Services and Daemons
+#
+# SYNOPSIS
+#     lab-services-review {start|finish}
+#
+#        start   - prepare the system for starting the lab
+#        grade   - perform evaluation steps on the system
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start, grading,
+#     or finish for the Controlling Services and Daemons Lab.
+#
+# CHANGELOG
+#   * Wed Feb 08 2019 Snehangshu Karmakar <snehk@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='serverb'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start grade finish)
+
+srvc1="psacct"
+srvc2="rsyslog"
+
+function lab_start {
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} for lab exercise work:"
+  print_line
+
+  pad " · Verifying server is reachable: ${target}"
+  host_reachable ${target}
+  print_SUCCESS
+
+  pad " · Ensuring disabled/stopped: ${srvc1}"
+  srvc1_enabled=$(${ssh} ${target} "systemctl is-enabled ${srvc1}")
+  srvc1_active=$(${ssh} ${target} "systemctl is-active ${srvc1}")
+  if [[ ${srvc1_enabled} == "disabled" && ${srvc1_active} == "inactive" ]]; then
+    print_SUCCESS
+  else
+    ${ssh} ${target} "systemctl disable ${srvc1}"
+    ${ssh} ${target} "systemctl stop ${srvc1}"
+    print_SUCCESS
+  fi
+
+  pad " · Ensuring enabled/started: ${srvc2}"
+  srvc2_enabled=$(${ssh} ${target} "systemctl is-enabled ${srvc2}")
+  srvc2_active=$(${ssh} ${target} "systemctl is-active ${srvc2}")
+  if [[ ${srvc2_enabled} == "enabled" && ${srvc2_active} == "active" ]]; then
+    print_SUCCESS
+  else
+    ${ssh} ${target} "systemctl enable ${srvc2}"
+    ${ssh} ${target} "systemctl start ${srvc2}"
+    print_SUCCESS
+  fi
+
+  print_line
+}
+
+function lab_grade {
+
+  print_header "Grading the student's work on ${target}:"
+  host_reachable ${target}
+
+  # Put in the steps to grade the lab (use print_PASS or print_FAIL)
+  pad " · Verifying ${srvc1}: running"
+  srvc1_active=$(${ssh} ${target} "systemctl is-active ${srvc1}")
+  if [[ ${srvc1_active} == "active" ]]; then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying ${srvc1}: enabled"
+  srvc1_enabled=$(${ssh} ${target} "systemctl is-enabled ${srvc1}")
+  if [[ ${srvc1_enabled} == "enabled" ]]; then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying ${srvc2}: stopped"
+  srvc2_active=$(${ssh} ${target} "systemctl is-active ${srvc2}")
+  if [[ ${srvc2_active} == "inactive" ]]; then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying ${srvc2}: disabled"
+  srvc2_enabled=$(${ssh} ${target} "systemctl is-enabled ${srvc2}")
+  if [[ ${srvc2_enabled} == "disabled" ]]; then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  # Overall grade
+  print_line
+  pad 'Overall lab grade'
+  if [[ ${fail_count} -eq 0 ]]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  print_line
+}
+function lab_finish {
+
+  print_header "You have completed attempting the guided exercise."
+  host_reachable ${target}
+
+  pad " · Ensuring disabled/inactive on ${target}: ${srvc1}"
+  srvc1_enabled=$(${ssh} ${target} "systemctl is-enabled ${srvc1}")
+  srvc1_active=$(${ssh} ${target} "systemctl is-active ${srvc1}")
+  if [[ ${srvc1_enabled} == "disabled" && ${srvc1_active} == "inactive" ]]; then
+    print_SUCCESS
+  else
+    ${ssh} ${target} "systemctl disable ${srvc1}"
+    ${ssh} ${target} "systemctl stop ${srvc1}"
+    print_SUCCESS
+  fi
+
+  pad " · Ensuring enabled/started on ${target}: ${srvc2}"
+  srvc2_enabled=$(${ssh} ${target} "systemctl is-enabled ${srvc2}")
+  srvc2_active=$(${ssh} ${target} "systemctl is-active ${srvc2}")
+  if [[ ${srvc2_enabled} == "enabled" && ${srvc2_active} == "active" ]]; then
+    print_SUCCESS
+  else
+    ${ssh} ${target} "systemctl enable ${srvc2}"
+    ${ssh} ${target} "systemctl start ${srvc2}"
+    print_SUCCESS
+  fi
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

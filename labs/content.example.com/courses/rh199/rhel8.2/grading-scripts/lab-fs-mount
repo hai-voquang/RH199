@@ -1,0 +1,127 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-fs-mount - grading script for RH124 Guided Exercise
+#                    Mounting and Unmounting File Systems
+#
+# SYNOPSIS
+#     lab-fs-mount {start|finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start,
+#     or finish for the Mounting and Unmounting File Systems
+#     Guided Exercise.
+#
+# CHANGELOG
+#   * Wed Feb 20 2019 Snehangshu Karmakar <snehk@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='servera'
+
+devname="/dev/vdb"
+partname="${devname}1"
+dirname="/mnt/newspace"
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start finish)
+
+function lab_start {
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} for lab exercise work:"
+  print_line
+
+  pad " · Verifying server is reachable: ${target}"
+  host_reachable ${target}
+  print_SUCCESS
+
+  pad " · Ensuring directory does not exits: ${dirname}"
+  if ${ssh} ${target} [[ ! -d ${dirname} ]]; then
+    print_SUCCESS
+  else
+    ${ssh} ${target} "rm -rf ${dirname}"
+    print_SUCCESS
+  fi
+
+  pad " · Creating new partition: ${devname}"
+  if ${ssh} ${target} [[ -b "${devname}" ]]; then
+    disksize=$(${ssh} ${target} "parted -s ${devname} print 2> /dev/null |awk '/^Disk/ {print \$3}'|sed 's/[Mm][Bb]//'")
+    for partition in $(${ssh} ${target} "parted -s ${devname} print 2> /dev/null | awk '/^ / {print \$1}'")
+    do
+      ${ssh} ${target} "umount ${devname}${partition}"
+      ${ssh} ${target} "parted -s ${devname} rm ${partition}"
+    done
+    if ${ssh} ${target} "parted -s ${devname} mklabel msdos mkpart primary 0 ${disksize}"; then
+      if ${ssh} ${target} "partprobe"; then
+        if ${ssh} ${target} "mkfs.xfs -f ${partname}"; then
+          print_SUCCESS
+        else
+          print_FAIL
+          print_line "mkfs failed"
+        fi
+      else
+        print_FAIL
+        print_line "partprobe failed"
+      fi
+    else
+      print_FAIL
+      print_line "parted failed"
+    fi 
+  else
+    print_FAIL
+    print_line "No secondary disk device recognized."
+  fi  
+  print_line
+}
+
+function lab_finish {
+
+  print_header "You have completed attempting the guided exercise."
+  host_reachable ${target}
+
+  pad " · Deleting directory: ${dirname}"
+  if ${ssh} ${target} [[ ! -d ${dirname} ]]; then
+    print_SUCCESS
+  else
+    ${ssh} ${target} "rm -rf ${dirname}"
+    print_SUCCESS
+  fi
+
+  pad " · Deleting partitions: ${devname}"
+  if ${ssh} ${target} [[ -b "${devname}" ]]; then
+    for partition in $(${ssh} ${target} "parted -s ${devname} print 2> /dev/null | awk '/^ / {print \$1}'")
+    do
+      ${ssh} ${target} "umount ${devname}${partition}"
+      ${ssh} ${target} "parted -s ${devname} rm ${partition}"
+    done
+    if ! ${ssh} ${target} "parted -s ${devname} print 2> /dev/null | awk '/^ / {print \$1}' | grep ${partname}"; then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi  
+  else
+    print_FAIL
+    print_line "No secondary disk device recognized."
+  fi  
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

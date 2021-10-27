@@ -1,0 +1,147 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-ssh-key - grading script for RH124 Configuring SSH Key-based Authentication
+#
+# SYNOPSIS
+#     lab-ssh-key {start|finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start
+#     or finish for the particular lab of awesomeness.
+#
+# CHANGELOG
+#   * Thu Feb 07 2019 Saumik Paul <saumik@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+targeta='servera'
+targetb='serverb'
+#known_hosts=/home/student/.ssh/known_hosts
+ge_user1='operator1'
+#ge_user2='operator2'
+#ge_user3='operator3'
+#ge_user_pw='redhat'
+passwd='/etc/passwd'
+shadow='/etc/shadow'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start finish)
+
+
+function lab_start {
+
+  reqd_package='openssh-server openssh-clients'        # Just an example
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${targeta} and ${targetb} for lab exercise work:"
+  print_line
+  host_reachable ${targeta} ${targetb}
+
+
+  # Check for lab prerequisites (perhaps a required package?).
+  if ! ${ssh} ${targeta} "rpm -q --quiet ${reqd_package}"
+  then
+    pad " · Error - ${reqd_package} is not installed on ${targeta}"
+    print_FAIL
+  elif ! ${ssh} ${targetb} "rpm -q --quiet ${reqd_package}"
+  then
+    pad " · Error - ${reqd_package} is not installed on ${targetb}"
+  else
+    pad " · Creating ${ge_user1} on ${targeta}"
+    if ${ssh} ${targeta} "grep ${ge_user1} ${passwd} ${shadow}"
+    then
+      if ${ssh} ${targeta} "userdel -r ${ge_user1}" &&
+	 ${ssh} ${targeta} "useradd ${ge_user1}" &&
+	 ${ssh} ${targeta} "echo redhat | passwd --stdin ${ge_user1}"
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    else
+      ${ssh} ${targeta} "useradd ${ge_user1}" &&
+      ${ssh} ${targeta} "echo redhat | passwd --stdin ${ge_user1}"
+      if ${ssh} ${targeta} "getent passwd ${ge_user1}" &&
+	 ${ssh} ${targeta} "getent shadow ${ge_user1}"
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    fi
+
+    pad " · Creating ${ge_user1} on ${targetb}"
+    if ${ssh} ${targetb} "grep ${ge_user1} ${passwd} ${shadow}"
+    then
+      if ${ssh} ${targetb} "userdel -r ${ge_user1}" &&
+	 ${ssh} ${targetb} "useradd ${ge_user1}" &&
+	 ${ssh} ${targetb} "echo redhat | passwd --stdin ${ge_user1}"
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    else
+      ${ssh} ${targetb} "useradd ${ge_user1}" &&
+      ${ssh} ${targetb} "echo redhat | passwd --stdin ${ge_user1}"
+      if ${ssh} ${targetb} "getent passwd ${ge_user1}" &&
+	 ${ssh} ${targetb} "getent shadow ${ge_user1}"
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    fi
+
+    print_line
+  fi
+}
+
+function lab_finish {
+
+  print_header "Completing the lab on ${targeta}:"
+  host_reachable ${target}
+
+  pad " · Deleting ${ge_user1} from ${targeta}"
+  ${ssh} ${targeta} "pkill --signal SIGKILL -u ${ge_user1}"
+  ${ssh} ${targeta} "userdel -r ${ge_user1}"
+  if ! ${ssh} ${targeta} "grep ${ge_user1} ${passwd} ${shadow}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi    
+
+  pad " · Deleting ${ge_user1} from ${targetb}"
+  ${ssh} ${targetb} "pkill --signal SIGKILL -u ${ge_user1}"
+  ${ssh} ${targetb} "userdel -r ${ge_user1}"
+  if ! ${ssh} ${targetb} "grep ${ge_user1} ${passwd} ${shadow}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi    
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

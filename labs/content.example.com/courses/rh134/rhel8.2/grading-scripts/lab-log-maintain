@@ -1,0 +1,194 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-log-maintain - grading script for RH124 Maintaining Accurate Time 
+#
+# SYNOPSIS
+#     lab-log-maintain {start|finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start
+#     or finish for the particular lab of awesomeness.
+#
+# CHANGELOG
+#   * Mon Feb 18 2019 Saumik Paul <saumik@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+targeta='servera'
+#targetb='serverb'
+#known_hosts=/home/student/.ssh/known_hosts
+#ge_user1='operator1'
+#ge_user2='operator2'
+#ge_user3='operator3'
+#ge_user_pw='redhat'
+#passwd='/etc/passwd'
+#shadow='/etc/shadow'
+chrony_conf='/etc/chrony.conf'
+chrony_conf_prerht='/etc/chrony.conf-prerht'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start finish)
+
+
+function lab_start {
+
+  reqd_package='chrony'        # Just an example
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${targeta} for lab exercise work:"
+  print_line
+  host_reachable ${targeta}
+
+
+  # Check for lab prerequisites (perhaps a required package?).
+  if ! ${ssh} ${targeta} "rpm -q --quiet ${reqd_package}"
+  then
+    pad " · Error - ${reqd_package} is not installed on ${targeta}"
+    print_FAIL
+  else
+    pad " · Ensuring that the required environment is ready on ${targeta}"
+    if ${ssh} ${targeta} "rpm -q --quiet ${reqd_package}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Backing up ${chrony_conf} on ${targeta}"
+    if ! ${ssh} ${targeta} "test -f /tmp/chrony.conf"
+    then
+      if ${ssh} ${targeta} "cp -f ${chrony_conf} /tmp/" &&
+         ${ssh} ${targeta} "test -f /tmp/chrony.conf"
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    else
+      print_SUCCESS
+    fi
+
+    pad " · Recording pre-GE time zone on ${targeta}"
+    ${ssh} ${targeta} "timedatectl | grep 'Time zone:' | tr -s ' ' | cut -d' ' -f4" > /tmp/time_zone_${targeta}
+    if [ -f /tmp/time_zone_${targeta} ] &&
+       [ -s /tmp/time_zone_${targeta} ]
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Revoking time servers from ${targeta}"
+    if ${ssh} ${targeta} "cp -f ${chrony_conf_prerht} ${chrony_conf}" &&
+       ${ssh} ${targeta} "sed -i 's/pool 2.rhel.pool.ntp.org iburst/#pool 2.rhel.pool.ntp.org iburst/g' ${chrony_conf}" &&
+       ${ssh} ${targeta} "systemctl restart chronyd.service"
+    then
+      time_sources=$(${ssh} ${targeta} "chronyc sources | head -1 | cut -d' ' -f6")
+      if [ "${time_sources}" -eq 0 ]
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    else
+      print_FAIL
+    fi
+
+    pad " · Disabling time synchronization on ${targeta}"
+    if ${ssh} ${targeta} "timedatectl set-ntp no"
+    then
+      time_sync_servera=$(${ssh} ${targeta} "timedatectl | grep synchronized | cut -d' ' -f4")
+      chrony_active_status=$(${ssh} ${targeta} "systemctl is-active chronyd.service")
+      chrony_enabled_status=$(${ssh} ${targeta} "systemctl is-enabled chronyd.service")
+      if [ "${time_sync_servera}" == "no" ] &&
+	 [ "${chrony_active_status}" == "inactive" ] &&
+	 [ "${chrony_enabled_status}" == "disabled" ]
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    else
+      print_FAIL
+    fi
+
+    print_line
+  fi
+}
+
+function lab_finish {
+
+  print_header "Completing the lab on ${targeta}:"
+  host_reachable ${targeta}
+
+  reqd_package='chrony'        # Just an example
+
+  pad " · Ensuring that the required environment is clean on ${targeta}"
+  if ${ssh} ${targeta} "rpm -q --quiet ${reqd_package}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Restoring original ${chrony_conf} on ${targeta}"
+  time_source_classroom=$(${ssh} ${targeta} "chronyc sources | tail -1 | cut -d' ' -f2")
+  if ${ssh} ${targeta} "cp -f /tmp/chrony.conf ${chrony_conf}" &&
+     ${ssh} ${targeta} "timedatectl set-ntp no" &&
+     ${ssh} ${targeta} "timedatectl set-ntp yes" &&
+     ${ssh} ${targeta} "rm -f /tmp/chrony.conf" &&
+     [ "$time_source_classroom" == "classroom.example.com" ]
+  then
+    print_SUCCESS
+  else
+     ${ssh} ${targeta} "timedatectl set-ntp yes"
+     time_source_classroom=$(${ssh} ${targeta} "chronyc sources | tail -1 | cut -d' ' -f2")
+     if [ "$time_source_classroom" == "classroom.example.com" ] &&
+        ${ssh} ${targeta} "rm -f /tmp/chrony.conf"
+     then
+       print_SUCCESS
+     else
+       print_FAIL
+     fi
+  fi
+
+  pad " · Restoring original time zone on ${targeta}"
+  if ! [ -f /tmp/time_zone_${targeta} ]
+  then
+    print_SUCCESS
+  else
+    ${ssh} ${targeta} "timedatectl set-timezone $(cat /tmp/time_zone_${targeta})"
+    original_time_zone=$(${ssh} ${targeta} "timedatectl | grep 'Time zone:' | tr -s ' ' | cut -d' ' -f4")
+    recorded_time_zone=$(cat /tmp/time_zone_${targeta})
+    if [ "${original_time_zone}" == "${recorded_time_zone}" ] &&
+       rm -f /tmp/time_zone_${targeta}
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

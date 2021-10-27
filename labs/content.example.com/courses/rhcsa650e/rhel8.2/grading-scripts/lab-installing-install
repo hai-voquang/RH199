@@ -1,0 +1,122 @@
+#!/bin/bash
+#
+# Copyright 2019, 2020 Red Hat, Inc.
+#
+# NAME
+#     lab-installing-install - grading script for RH134 Installing Red Hat
+#                              Enterprise Linux guided exercise
+#
+# SYNOPSIS
+#     lab-installing-install {start|finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start or finish for
+#     the Installing Red Hat Enterprise Linux guided exercise.
+#
+# CHANGELOG
+#   * Tue Aug 25 2020 Herve Quatremain <hquatrem@redhat.com>
+#   - fixing UEFI boot issues
+#   * Tue Apr 02 2019 Herve Quatremain <hquatrem@redhat.com>
+#   - original code
+
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='servera'
+content_rhel_ver='rhel8.2'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+
+# No finish script for this Guided Exercise.
+# Students must reset their system after manual installation.
+declare -a valid_commands=(start)
+
+
+function lab_start {
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} for lab exercise work:"
+  print_line
+  host_reachable ${target}
+
+  rhel_backup ${target} /boot/efi/EFI/redhat/grub.cfg /boot/efi/EFI/redhat/grubenv /etc/default/grub /boot/grub2/grub.cfg /boot/grub2/grubenv /etc/grub.d/40_custom /boot/loader
+
+  pad ' · Retrieving vmlinuz and initrd.img from DVD'
+  if ${ssh} ${target} "wget -O /boot/vmlinuz  http://content/${content_rhel_ver}/x86_64/dvd/isolinux/vmlinuz"
+  then
+    if ${ssh} ${target} "wget -O /boot/initrd.img  http://content/${content_rhel_ver}/x86_64/dvd/isolinux/initrd.img"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  else
+    print_FAIL
+  fi
+
+  pad " · Retrieving ${target} network parameters"
+  ip=$(getent hosts servera | cut -d ' ' -f1)
+  netif=$(${ssh} ${target} "ip -br -4 addr show" | grep ${ip} | cut -d ' ' -f1)
+  gateway=$(${ssh} ${target} "ip route show" | grep default | cut -d ' ' -f3)
+  dns=$(${ssh} ${target} "grep nameserver /etc/resolv.conf" | head -n 1 | cut -d ' ' -f2)
+  if [ -n "${ip}" -a -n ${netif} -a -n ${gateway} -a -n "${dns}" ]
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Creating a GRUB2 entry for installation on ${target}"
+  ARGS=$(${ssh} ${target} "grep ^GRUB_CMDLINE_LINUX= /etc/default/grub" | cut -d= -f2- | tr -d '"' | sed -e 's/console=[^ ]*//g')
+  # The inst.geoloc=0 is set to prevent Anaconda to perform network
+  # geolocatization. Anaconda uses geolocalization to preset the keyboard
+  # layout and the language.
+  ARGS="${ARGS} inst.geoloc=0 inst.stage2=http://content/${content_rhel_ver}/x86_64/dvd nameserver=${dns} ip=${ip}::${gateway}:255.255.255.0:localhost:${netif}:none"
+  if ${ssh} ${target} "grubby --add-kernel=/boot/vmlinuz --initrd=/boot/initrd.img --title='Install Red Hat Enterprise Linux 8' --args=\"${ARGS}\" --make-default"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Updating GRUB2 countdown and default entry on ${target}"
+  ${ssh} ${target} "sed -i -e 's/GRUB_TIMEOUT=.*/GRUB_TIMEOUT=59/' -e 's/GRUB_DEFAULT=.*/GRUB_DEFAULT=\"Install Red Hat Enterprise Linux 8\"/' /etc/default/grub"
+  print_SUCCESS
+
+  rhel_grub2_mkconfig ${target}
+
+  print_line
+}
+
+
+function lab_finish {
+
+  print_header "Cleaning up the lab on ${target}:"
+  host_reachable ${target}
+
+  pad " · Removing /boot/vmlinuz and /boot/initrd.img on ${target}"
+  ${ssh} ${target} "grubby --remove-kernel=/boot/vmlinuz"
+  ${ssh} ${target} "rm -f /boot/vmlinuz /boot/initrd.img"
+  print_SUCCESS
+
+  rhel_restore ${target}
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

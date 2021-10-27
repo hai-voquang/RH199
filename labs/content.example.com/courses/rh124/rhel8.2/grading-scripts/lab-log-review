@@ -1,0 +1,227 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-log-review - grading script for RH124 Lab Analyzing and Storing Logs
+#
+# SYNOPSIS
+#     lab-log-maintain {start|grade|finish}
+#
+#        start   - prepare the system for starting the lab
+#	 grade   - perform evaluation steps on the system 
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start
+#     or finish for the particular lab of awesomeness.
+#
+# CHANGELOG
+#   * Mon Feb 19 2019 Saumik Paul <saumik@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+#targeta='servera'
+targetb='serverb'
+#known_hosts=/home/student/.ssh/known_hosts
+#ge_user1='operator1'
+#ge_user2='operator2'
+#ge_user3='operator3'
+#ge_user_pw='redhat'
+#passwd='/etc/passwd'
+#shadow='/etc/shadow'
+auth_errors_conf='/etc/rsyslog.d/auth-errors.conf'
+auth_errors_log='/var/log/auth-errors'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start grade finish)
+
+
+function lab_start {
+
+  reqd_package='chrony'        # Just an example
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${targetb} for lab exercise work:"
+  print_line
+  host_reachable ${targetb}
+
+
+  # Check for lab prerequisites (perhaps a required package?).
+  if ! ${ssh} ${targetb} "rpm -q --quiet ${reqd_package}"
+  then
+    pad " · Error - ${reqd_package} is not installed on ${targetb}"
+    print_FAIL
+  else
+    pad " · Ensuring that the required environment is ready on ${targetb}"
+    if ${ssh} ${targetb} "rpm -q --quiet ${reqd_package}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Recording pre-Lab time zone on ${targetb}"
+    ${ssh} ${targetb} "timedatectl | grep 'Time zone:' | tr -s ' ' | cut -d' ' -f4" > /tmp/time_zone_${targetb}
+    if [ -f /tmp/time_zone_${targetb} ] &&
+       [ -s /tmp/time_zone_${targetb} ]
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Ensuring auth-errors config file does not exist on ${targetb}"
+    if ! ${ssh} ${targetb} "test -e ${auth_errors_conf}"
+    then
+      print_SUCCESS
+    else
+      if ${ssh} ${targetb} "rm -f ${auth_errors_conf}" &&
+	 ! ${ssh} ${targetb} "test -e ${auth_errors_conf}" &&
+	 ${ssh} ${targetb} "systemctl restart rsyslog"
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    fi
+
+    pad " · Ensuring auth-errors log file does not exist on ${targetb}"
+    if ! ${ssh} ${targetb} "test -e ${auth_errors_log}"
+    then
+      print_SUCCESS
+    else
+      if ${ssh} ${targetb} "rm -f ${auth_errors_log}" &&
+	 ! ${ssh} ${targetb} "test -e ${auth_errors_log}" &&
+	 ${ssh} ${targetb} "systemctl restart rsyslog"
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    fi
+
+    print_line
+  fi
+}
+
+function lab_grade {
+
+  print_header "Grading the student's work on ${targetb}:"
+  host_reachable ${targetb}
+
+  # Put in the steps to grade the lab (use print_PASS or print_FAIL)
+  pad " · Verifying the time zone on ${targetb}"
+  time_zone_eval=$(${ssh} ${targetb} "timedatectl | grep 'Time zone:' | tr -s ' ' | cut -d' ' -f4")
+  time_zone_compare='America/Jamaica'
+  if [ ${time_zone_eval} == ${time_zone_compare} ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying the auth-errors config file on ${targetb}"
+  if ${ssh} ${targetb} "echo > ${auth_errors_log}" &&
+     ${ssh} ${targetb} "logger -p authpriv.alert 'Logging test authpriv.alert'" &&
+     ${ssh} ${targetb} "grep 'Logging test authpriv.alert' ${auth_errors_log}"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  # Overall grade
+  print_line
+  pad 'Overall lab grade'
+  if [[ ${fail_count} -eq 0 ]]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  print_line
+}
+
+
+
+function lab_finish {
+
+  print_header "Completing the lab on ${targetb}:"
+  host_reachable ${targetb}
+
+  reqd_package='chrony'        # Just an example
+
+  pad " · Ensuring that the required environment is clean on ${targetb}"
+  if ${ssh} ${targetb} "rpm -q --quiet ${reqd_package}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Restoring original time zone on ${targetb}"
+  if ! [ -f /tmp/time_zone_${targetb} ]
+  then
+    print_SUCCESS
+  else
+    ${ssh} ${targetb} "timedatectl set-timezone $(cat /tmp/time_zone_${targetb})"
+    original_time_zone=$(${ssh} ${targetb} "timedatectl | grep 'Time zone:' | tr -s ' ' | cut -d' ' -f4")
+    recorded_time_zone=$(cat /tmp/time_zone_${targetb})
+    if [ "${original_time_zone}" == "${recorded_time_zone}" ] &&
+       rm -f /tmp/time_zone_${targetb}
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  pad " · Deleting auth-errors config file from ${targetb}"
+  if ${ssh} ${targetb} "rm -f ${auth_errors_conf}" &&
+     ! ${ssh} ${targetb} "test -e ${auth_errors_conf}" &&
+     ${ssh} ${targetb} "systemctl restart rsyslog"
+  then
+    print_SUCCESS
+  else
+    if ! ${ssh} ${targetb} "test -e ${auth_errors_conf}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  pad " · Deleting auth-errors log file from ${targetb}"
+  if ${ssh} ${targetb} "rm -f ${auth_errors_log}" &&
+     ! ${ssh} ${targetb} "test -e ${auth_errors_log}" &&
+     ${ssh} ${targetb} "systemctl restart rsyslog"
+  then
+    print_SUCCESS
+  else
+    if ! ${ssh} ${targetb} "test -e ${auth_errors_log}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

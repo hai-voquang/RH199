@@ -1,0 +1,98 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-perms-fs - grading script for RH124 Managing File Security from the Command Line 
+#
+# SYNOPSIS
+#     lab-edit-review {start|grade|finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start, grading,
+#     or finish for the particular lab of awesomeness.
+#
+# CHANGELOG
+#   * Mon May 20 2019 Saumik Paul <saumik@redhat.com>
+#   - updated the code to reuse variables and added the pkill command in finish
+#   * Fri Feb 01 2019 Fiona Allen <fallen@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='servera'
+directory='/home/student/bin'
+file='/home/student/control_outfile'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start finish)
+
+
+function lab_start {
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing workstation for lab exercise work:"
+  print_line
+
+  pad " · Verifying that ${target} is running: "
+  if host_reachable ${target}
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  print_line
+
+}
+
+function lab_finish {
+
+  print_header "Completing the lab on workstation:"
+  host_reachable ${target}
+  
+  pad " · Deleting outfile: ${file}"
+  if ${ssh} ${target} "test ! -f ${file}";
+  then
+   print_SUCCESS
+  else
+    ${ssh} ${target} "pkill -9 control; rm -f ${file}"
+    if ${ssh} ${target} "test ! -f ${file}"; 
+    then 
+      print_SUCCESS
+    else
+      print_FAIL
+     fi
+   fi
+
+  pad " · Deleting directory: ${directory}: "
+  if ${ssh} ${target} ls ${directory}
+  then
+    ${ssh} ${target} rm -rf ${directory} && print_SUCCESS
+    else
+      if ${ssh} ${target} ! ls ${directory}
+      then
+        print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  print_header 'Lab finished.'
+
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

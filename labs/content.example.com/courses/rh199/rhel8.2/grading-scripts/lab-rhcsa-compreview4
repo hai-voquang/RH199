@@ -1,0 +1,308 @@
+#!/bin/bash
+#
+# Copyright 2020 Red Hat, Inc.
+#
+# NAME
+#     lab-rhcsa-compreview4 - grading script for RH134 Running Containers
+#                             Comprehensive Review
+#
+# SYNOPSIS
+#     lab-rhcsa-compreview4 {start|grade|finish}
+#
+#        start   - prepare the system for starting the lab
+#        grade   - perform evaluation steps on the system
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start, grading,
+#     or finish for the Running Containers Comprehensive Review.
+#
+# CHANGELOG
+#   * Mon Sep 07 2020 Herve Quatremain <hquatrem@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='serverb'
+system_user='containers'
+persistent_dir="/srv/web"
+image='registry.lab.example.com/rhel8/httpd-24'
+tag='1-105'
+container_name='web'
+local_port=8888
+HTTPD_MPM=event
+storage='/var/www'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start grade finish)
+
+
+function lab_start {
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} for lab exercise work:"
+  print_line
+  host_reachable ${target}
+
+  rhel_containers_check_quay
+
+  rhel_containers_inspect_image admin redhat321 ${image}:${tag} Digest
+
+  rhel_add_user ${target} ${system_user} redhat ""
+
+  pad " · Adding ${system_user} to the wheel group on ${target}"
+  if ${ssh} ${target} "usermod -aG wheel ${system_user}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  rhel_containers_add_registry_DNS ${target} && \
+  rhel_containers_add_repository ${target} && \
+  rhel_containers_configure_quay_client_user ${target} ${system_user}
+
+  pad " · Deploying the help files on ${target}"
+  ${ssh} ${target} "mkdir -p ~${system_user}/${problem_name}"
+  cat <<EOF | ${ssh} ${target} "cat > ~${system_user}/${problem_name}/variables"
+        Container name: ${container_name}
+                 Image: ${image}
+             Image Tag: ${tag}
+             Host port: ${local_port}
+        Container port: 8080
+       Local directory: ${persistent_dir}
+ Web content directory: ${storage}
+  Environment variable: HTTPD_MPM=${HTTPD_MPM}
+
+EOF
+  print_SUCCESS
+
+  pad " · Creating the web content archive on ${target}"
+  TMP_DIR="$(mktemp --directory)"
+  mkdir -p "${TMP_DIR}"/html
+  cat <<EOF > "${TMP_DIR}"/html/index.html
+Comprehensive Review Web Content Test
+
+Lorem ipsum dolor sit amet, consectetur adipiscing elit.
+Sed sit amet lacus vestibulum, varius magna sit amet, tempus neque.
+Praesent porttitor ligula a leo pharetra porttitor.
+Nunc a finibus diam, a condimentum augue.
+Nulla pulvinar nulla id imperdiet luctus.
+Donec tempus risus quis ultricies iaculis.
+Ut accumsan eu lectus eu fermentum.
+Duis ac nulla turpis.
+Nam aliquet elementum pellentesque.
+Fusce imperdiet tortor vel ligula egestas fermentum.
+Curabitur ut metus sit amet arcu ultricies vestibulum.
+
+EOF
+  chmod -R a+rX "${TMP_DIR}"/html
+  tar zcf "${TMP_DIR}"/web-content.tgz -C "${TMP_DIR}" html
+  if ${scp} "${TMP_DIR}"/web-content.tgz ${target}:~${system_user}/${problem_name}/
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+  rm -rf "${TMP_DIR}"
+  ${ssh} ${target} "chown -R ${system_user}: ~${system_user}/${problem_name}"
+
+  print_line
+}
+
+function lab_grade {
+
+  print_header "Grading the student's work on ${target}:"
+  host_reachable ${target}
+
+  # Ensuring that the container is running if student has stopped it
+  if ${ssh} ${target} "id ${system_user}"
+  then
+    ${ssh} ${system_user}@${target} "systemctl --user start container-${container_name}.service"
+  fi
+
+  pad " · The web content is extracted in ${persistent_dir}"
+  if ${ssh} ${target} "grep 'tempus risus' ${persistent_dir}/html/index.html"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · The web content is availabre through port ${local_port}"
+  ${ssh} ${target} "curl http://localhost:${local_port}/index.html" | grep -q 'tempus risus'
+  if [ $? -eq 0 ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad ' · Required container packages exist'
+  if ${ssh} ${target} 'rpm -q podman skopeo'
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · The ${container_name} container exists"
+  TMP_FILE="$(mktemp)"
+  ${ssh} ${target} "su - ${system_user} -c 'podman inspect ${container_name}'" > "${TMP_FILE}"
+  if [ $? -eq 0 ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · The container is using the correct image"
+  if grep -q "${image}" "${TMP_FILE}"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · The container is using the correct image tag"
+  if grep -q "${image}:${tag}" "${TMP_FILE}"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · The container host port is ${local_port}"
+  if grep -w ${local_port} "${TMP_FILE}" | grep -q '"hostPort"'
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · The HTTPD_MPM variable is set to ${HTTPD_MPM}"
+  if grep -qw "HTTPD_MPM=${HTTPD_MPM}" "${TMP_FILE}"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · The container uses ${persistent_dir} for storage"
+  if grep "${persistent_dir}" "${TMP_FILE}" | grep -q '"Source"'
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · The storage is mounted in ${storage}"
+  if grep -w "${storage}" "${TMP_FILE}" | grep -q '"Destination"'
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · SELinux context is set for ${persistent_dir}"
+  ${ssh} ${target} "stat --format=%C ${persistent_dir}" | grep -q container_file_t
+  if [ $? -eq 0 ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · The systemd unit file exists for the container"
+  if ${ssh} ${target} "test -s /home/${system_user}/.config/systemd/user/container-${container_name}.service"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · The systemd service for the container is enabled"
+  if ${ssh} ${target} "id ${system_user}"
+  then
+    if ${ssh} ${system_user}@${target} "systemctl --user is-enabled container-${container_name}.service"
+    then
+      print_PASS
+    else
+      print_FAIL
+    fi
+  else
+    print_FAIL
+  fi
+
+  pad " · The services for ${system_user} start at boot"
+  ${ssh} ${target} "loginctl show-user ${system_user}" | grep -qi Linger=yes
+  if [ $? -eq 0 ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  rm -f "${TMP_FILE}"
+
+  # Overall grade
+  print_line
+  pad 'Overall lab grade'
+  if [[ ${fail_count} -eq 0 ]]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  print_line
+}
+
+function lab_finish {
+
+  print_header "Cleaning up the lab on ${target}:"
+  host_reachable ${target}
+
+  if ${ssh} ${target} "id ${system_user}"
+  then
+    ${ssh} ${system_user}@${target} "systemctl --user disable --now container-${container_name}.service"
+  fi
+
+  rhel_containers_rm_containers_user ${target} ${system_user}
+  rhel_containers_undeploy_client ${target}
+
+  pad " · Removing exercise directories on ${target}"
+  ${ssh} ${target} "rm -rf /home/student/.config/systemd ~${system_user}/.config/systemd ${persistent_dir}"
+  print_SUCCESS
+
+  pad " · Reloadind systemd configuration on ${target}"
+  ${ssh} student@${target} "systemctl --user daemon-reload"
+  if ${ssh} ${target} "id ${system_user}"
+  then
+    ${ssh} ${system_user}@${target} "systemctl --user daemon-reload"
+  fi
+  print_SUCCESS
+
+  pad " · Disabling lingering services on ${target}"
+  ${ssh} ${target} "loginctl disable-linger student ; loginctl disable-linger ${system_user}"
+  print_SUCCESS
+
+  rhel_del_user ${target} ${system_user}
+  ${ssh} ${target} "rm -rf /home/${system_user}"
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

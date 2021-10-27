@@ -1,0 +1,289 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-netstorage-autofs - Grading script for RH134 NetStorage Autofs Guided Exercise.
+#
+# SYNOPSIS
+#     lab-netstorage-autofs {start|finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start or
+#     finish for the RH134 NetStorage Autofs Guided Exercise.
+#     
+#     It creates groups called "operators" (gid=1500)  and "contractors"
+#     (gid=1600) on both servera and serverb. It also creates users on 
+#     both machines,operator1 (uid=1501), operator2 (uid=1502), contractor1
+#     (uid=1601), contractor2 (uid=1602) each with a password of "redhat".
+#     On serverb, it creates a read-write NFS v4 server that shares the
+#     /shares/direct and /shares/indirect directories.
+#
+# CHANGELOG
+#   * Thu May 02 2019 Adrian Andrade <aandrade@redhat.com>
+#   - implemented test-and-set logic
+#   * Wed Apr 05 2019 Adrian Andrade <aandrade@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+work='workstation'
+target1='servera'
+target2='serverb'
+reqd_package='vim-enhanced nfs-utils'
+nfs_share='/shares'
+nfs_group1='operators'
+nfs_group2='contractors'
+nfs_user1='operator1'
+nfs_user2='operator2'
+nfs_user3='contractor1'
+nfs_user4='contractor2'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start finish)
+
+function lab_start {
+
+  print_header 'Starting lab.'
+  print_line
+
+  print_line "Preparing ${target1} and ${target2} for lab exercise work:"
+  print_line
+
+  pad " · Verifying that ${target1} is running: "
+  if host_reachable ${target1}
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+    exit
+  fi
+
+  pad " · Verifying that ${target2} is running: "
+  if host_reachable ${target2}
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+    exit
+  fi
+
+  pad " · Preparing ${target1} for required packages: "
+  ${ssh} ${target1} "yum install -y ${reqd_package}"
+  print_SUCCESS
+
+  pad " · Preparing ${target2} for required packages: "
+  ${ssh} ${target2} "yum install -y ${reqd_package}"
+  print_SUCCESS
+
+  for host in ${target1} ${target2}
+  do
+    # create operators group (gid=1500) and contractors (gid=1600), if necessary,
+    # on server[ab]
+    rhel_add_group ${host} ${nfs_group1} '-g 1500'
+    rhel_add_group ${host} ${nfs_group2} '-g 1600'
+
+    # create operators[12],contractors[12] users (if necessary) on server[ab]
+    # (with passwords set to "redhat")
+    # uid=1501,1502, (both belong to "operators" group)
+    # uid=1601,1602, (both belong to "contractors" group)
+    rhel_add_user ${host} ${nfs_user1} redhat "-u 1501 -G ${nfs_group1}"
+    rhel_add_user ${host} ${nfs_user2} redhat "-u 1502 -G ${nfs_group1}"
+    rhel_add_user ${host} ${nfs_user3} redhat "-u 1601 -G ${nfs_group2}"
+    rhel_add_user ${host} ${nfs_user4} redhat "-u 1602 -G ${nfs_group2}"
+  done
+
+  # create /shares/[direct,indirect] on serverb (if necessary)
+  # and populate it with files
+  if ${ssh} ${target2} "[[ ! -d ${nfs_share} ]]"
+  then
+    pad " · Creating required directories in ${target2}: "
+    ${ssh} ${target2} "mkdir -p ${nfs_share}/direct/external"
+    ${ssh} ${target2} "mkdir -p ${nfs_share}/indirect/{west,central,east}"
+    print_SUCCESS
+
+    pad " · Configuring file permissions in ${target2}: "
+    ${ssh} ${target2} "chmod 775 /shares"
+    ${ssh} ${target2} "chmod -R 2770 ${nfs_share}/indirect"
+    ${ssh} ${target2} "chmod -R 2770 ${nfs_share}/direct"
+    print_SUCCESS
+
+    pad " · Configuring group ownership on folders in ${target2}: "
+    ${ssh} ${target2} "chgrp -R ${nfs_group1} ${nfs_share}/indirect"
+    ${ssh} ${target2} "chgrp -R ${nfs_group2} ${nfs_share}/direct/external"
+    print_SUCCESS
+
+    pad " · Creating required files in ${target2}: "
+    ${ssh} ${target2}  "cat > ${nfs_share}/indirect/west/README.txt" << EOF
+###West Folder###
+EOF
+
+    ${ssh} ${target2}  "cat > ${nfs_share}/indirect/central/README.txt" << EOF
+###Central Folder###
+EOF
+
+    ${ssh} ${target2}  "cat > ${nfs_share}/indirect/east/README.txt" << EOF
+###East Folder###
+EOF
+
+    ${ssh} ${target2}  "cat > ${nfs_share}/direct/external/README.txt" << EOF
+###External Folder###
+EOF
+    print_SUCCESS
+ 
+    pad " · Configuring SELinux Contexts in ${target2}: "
+    ${ssh} ${target2} "semanage fcontext -a -t public_content_rw_t '/shares(/.*)?'"
+    ${ssh} ${target2} "restorecon -vvFR /shares/"
+    print_SUCCESS
+  fi
+
+  # NFS export serverb:/shares/{direct,indirect} (rw) (if necessary)
+  if ${ssh} ${target2} "[[ ! -f /etc/nfs.conf-orig ]]"
+  then
+    pad " · Making /etc/nfs.conf backup in ${target2}: "
+    ${ssh} ${target2} "cp /etc/nfs.conf{,-orig}"
+    print_SUCCESS
+
+    pad " · Configuring NFSv4 Server in ${target2}: "
+    ${ssh} ${target2} "nfsconf --set nfsd udp n"
+    ${ssh} ${target2} "nfsconf --set nfsd tcp y"
+    ${ssh} ${target2} "nfsconf --set nfsd vers2 n"
+    ${ssh} ${target2} "nfsconf --set nfsd vers3 n"
+    ${ssh} ${target2} "nfsconf --set nfsd vers4  y"
+    ${ssh} ${target2} "nfsconf --set nfsd vers4.0 y"
+    ${ssh} ${target2} "nfsconf --set nfsd vers4.1 y"
+    ${ssh} ${target2} "nfsconf --set nfsd vers4.2 y"
+    ${ssh} ${target2} "echo '${nfs_share}/direct *(rw,no_root_squash)' > /etc/exports.d/direct.exports"
+    ${ssh} ${target2} "echo '${nfs_share}/indirect *(rw,no_root_squash)' > /etc/exports.d/indirect.exports"
+    ${ssh} ${target2} "systemctl unmask --now rpc-statd.service rpcbind.service rpcbind.socket"
+    ${ssh} ${target2} "systemctl enable --now nfs-server"
+    print_SUCCESS
+
+    pad " · Configuring Firewall in ${target2}: "
+    ${ssh} ${target2} "firewall-cmd --add-service=nfs"
+    ${ssh} ${target2} "firewall-cmd --runtime-to-permanent"
+    print_SUCCESS
+  fi
+
+  print_line
+
+}
+
+function lab_finish {
+
+  print_header "Completing the lab in ${target1} and ${target2}:"
+  print_line
+
+  # Need to disable ${target1}'s autofs service before cleaning
+  # up ${target2}.
+  if ${ssh} ${target1} "systemctl is-active autofs.service"
+  then
+    pad " · Disabling autofs from boot in ${target1}:"
+    ${ssh} ${target1} "systemctl disable autofs"
+    print_SUCCESS
+
+    pad " · Rebooting ${target1}:"
+    ${ssh} ${target1} "reboot"
+    print_SUCCESS
+  fi
+
+  if ${ssh} ${target2} "[[ -f /etc/nfs.conf-orig ]]"
+  then
+    pad " · Clearing NFSv4 Server configuration in ${target2}: "
+    ${ssh} ${target2} "systemctl disable --now nfs-server"
+    ${ssh} ${target2} "systemctl unmask --now rpc-statd.service rpcbind.service rpcbind.socket"
+    ${ssh} ${target2} "cat /etc/nfs.conf-orig > /etc/nfs.conf"
+    ${ssh} ${target2} "rm -rf /etc/nfs.conf-orig"
+    ${ssh} ${target2} "rm -rf /etc/exports.d/*"
+    print_SUCCESS
+
+    pad " · Removing shared directories and files in ${target2}: "
+    ${ssh} ${target2} "fuser /shares"
+    ${ssh} ${target2} "fuser /shares -k"
+    ${ssh} ${target2} "rm -rf /shares"
+    print_SUCCESS
+
+    pad " · Restoring SELinux configuration in ${target2}: "
+    ${ssh} ${target2} "semanage fcontext -d -t public_content_rw_t '/shares(/.*)?'"
+    print_SUCCESS
+
+    pad " · Restoring firewall in ${target2}: "
+    ${ssh} ${target2} "firewall-cmd --remove-service=nfs"
+    ${ssh} ${target2} "firewall-cmd --runtime-to-permanent"
+    print_SUCCESS
+  fi
+
+  rhel_del_user ${target2} ${nfs_user1}
+  rhel_del_user ${target2} ${nfs_user2}
+  rhel_del_user ${target2} ${nfs_user3}
+  rhel_del_user ${target2} ${nfs_user4}
+  rhel_del_group ${target2} ${nfs_group1}
+  rhel_del_group ${target2} ${nfs_group2}
+
+  pad " · Waiting for ${target1} to become available: "
+  if ssh -q -o "ConnectTimeout=5s" ${target1} "hostname"
+  then
+    print_SUCCESS
+  else
+    sleep 60
+    if ssh -q -o "ConnectTimeout=5s" ${target1} "hostname"
+    then
+      print_SUCCESS
+    else
+      sleep 60
+      if ssh -q -o "ConnectTimeout=5s" ${target1} "hostname"
+      then
+        print_SUCCESS
+      else
+        sleep 60
+        if ssh -q -o "ConnectTimeout=5s" ${target1} "hostname"
+        then
+          print_SUCCESS
+        else
+          sleep 60
+          if ssh -q -o "ConnectTimeout=5s" ${target1} "hostname"
+          then
+            print_SUCCESS
+          else
+            print_FAIL
+          fi
+        fi
+      fi
+    fi  
+  fi
+
+  if ${ssh} ${target1} "rpm -q autofs"
+  then
+    pad " · Uninstalling packages in ${target1}:"
+    ${ssh} ${target1} "yum remove -y autofs"
+    print_SUCCESS
+
+    pad " · Removing exercise files in ${target1}: "
+    ${ssh} ${target1} "rm -rf /etc/auto.*"
+    print_SUCCESS
+  fi
+
+  rhel_del_user ${target1} ${nfs_user1}
+  rhel_del_user ${target1} ${nfs_user2}
+  rhel_del_user ${target1} ${nfs_user3}
+  rhel_del_user ${target1} ${nfs_user4}
+  rhel_del_group ${target1} ${nfs_group1}
+  rhel_del_group ${target1} ${nfs_group2}
+
+  print_header 'Lab finished.'
+
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

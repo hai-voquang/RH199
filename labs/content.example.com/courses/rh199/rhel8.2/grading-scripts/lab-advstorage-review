@@ -1,0 +1,443 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-advstorage-review - grading script for RH134 Implementing Advanced Storage Features
+#
+# SYNOPSIS
+#     lab-advstorage-stratis {start|grade|finish}
+#
+#        start   - prepare the system for starting the lab
+#	 grade   - perform evaluation steps on the system
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start
+#     or finish for the Implementing Advanced Storage Features Review.
+#
+# CHANGELOG
+#   * Mon May 18, 2019, Dallas Spohn <dspohn@redhat.com>
+#   - creating snap mount if doesn't exist logic.
+#   * Mon Apr 01 2019 Saumik Paul <saumik@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='serverb'
+review_user='student'
+review_disk1='/dev/vdb'
+review_disk2='/dev/vdc'
+review_disk3='/dev/vdd'
+review_stratis_pool='labpool'
+review_stratis_pool_node='/stratis/labpool'
+review_stratis_fs='labfs'
+review_stratis_fs_node='/stratis/labpool/labfs'
+review_stratis_fs_snapshot='labfs-snap'
+review_stratis_fs_snapshot_node='/stratis/labpool/labfs-snap'
+review_fs_mount='/labstratisvol'
+review_fs_snap_mount='/labstratisvol-snap'
+review_file1='labfile1'
+review_file2='labfile2'
+review_vdo_volume='labvdo'
+review_vdo_node='/dev/mapper/labvdo'
+review_volume_dir='/labvdovol'
+review_source_file='/root/install.img'
+review_download_url='http://content.example.com/rhel8.2/x86_64/dvd/images/install.img'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start grade finish)
+
+function lab_start {
+
+  reqd_package='systemd vdo'        # Just an example
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} for lab exercise work:"
+  print_line
+  host_reachable ${target}
+
+
+  # Check for lab prerequisites (perhaps a required package?).
+  if ! ${ssh} ${target} "rpm -q --quiet ${reqd_package}"
+  then
+    pad " · Error - ${reqd_package} is not installed on ${target}"
+    print_FAIL
+  else
+    pad " · Backing up original /etc/fstab on ${target}"
+    ${ssh} ${target} "cp /etc/fstab /tmp/fstab.orig"
+    if ${ssh} ${target} "test -f /tmp/fstab.orig" &&
+       ${ssh} ${target} "test -s /tmp/fstab.orig"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Ensuring ${review_stratis_fs_snapshot} does not exist on ${target}"
+    ${ssh} ${target} "yum -y install stratisd stratis-cli" &&
+    ${ssh} ${target} "systemctl start stratisd.service" &&
+    ${ssh} ${target} "umount ${review_fs_snap_mount}"
+    ${ssh} ${target} "stratis fs destroy ${review_stratis_pool} ${review_stratis_fs_snapshot}"
+    stratis_fs1=$(${ssh} ${target} "stratis fs list" | grep ${review_stratis_fs_snapshot} | wc -l)
+    if [ "${stratis_fs1}" -eq 0 ]
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Ensuring ${review_stratis_fs} does not exist on ${target}"
+    ${ssh} ${target} "umount ${review_fs_mount}"
+    ${ssh} ${target} "stratis fs destroy ${review_stratis_pool} ${review_stratis_fs}"
+    stratis_fs1=$(${ssh} ${target} "stratis fs list" | grep ${review_stratis_fs} | wc -l)
+    if [ "${stratis_fs1}" -eq 0 ]
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Ensuring ${review_stratis_pool} does not exist on ${target}"
+    ${ssh} ${target} "stratis pool destroy ${review_stratis_pool}"
+    stratis_pool1=$(${ssh} ${target} "stratis pool list" | grep ${review_stratis_pool} | wc -l)
+    if [ "${stratis_pool1}" -eq 0 ]
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Ensuring ${review_fs_mount} does not exist on ${target}"
+    ${ssh} ${target} "rm -rf ${review_fs_mount}"
+    if ! ${ssh} ${target} "test -e ${review_fs_mount}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Ensuring ${review_fs_snap_mount} does not exist on ${target}"
+    ${ssh} ${target} "rm -rf ${review_fs_snap_mount}"
+    ${ssh} ${target} "yum -y remove stratisd stratis-cli" &&
+    ${ssh} ${target} "systemctl stop stratisd.service"
+    if ! ${ssh} ${target} "test -e ${review_fs_snap_mount}" &&
+       ! ${ssh} ${target} "rpm -q stratisd stratis-cli"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Downloading install.img on ${target}"
+    if ${ssh} ${target} "test -f ${review_source_file}" &&
+       ${ssh} ${target} "test -s ${review_source_file}"
+    then
+      print_SUCCESS
+    else
+      ${ssh} ${target} "rm -rf ${review_source_file}* && until test -f ${review_source_file}  && test -s ${review_source_file}; do curl -s -o ${review_source_file} ${review_download_url}; done"
+      if ${ssh} ${target} "test -f ${review_source_file}" &&
+         ${ssh} ${target} "test -s ${review_source_file}"
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    fi
+
+    pad " · Ensuring ${review_vdo_volume} volume does not exist on ${target}"
+    ${ssh} ${target} "umount ${review_volume_dir}"
+    ${ssh} ${target} "rm -rf ${review_volume_dir}"
+    no_vdo_verify=$(${ssh} ${target} "vdo list" | grep ${review_vdo_volume} | wc -l)
+    if [ "${no_vdo_verify}" -eq 0 ] &&
+       ! ${ssh} ${target} "test -d ${review_volume_dir}"
+    then
+      print_SUCCESS
+    else
+      ${ssh} ${target} "vdo remove --name=${review_vdo_volume}"
+      no_vdo_verify=$(${ssh} ${target} "vdo list" | grep ${review_vdo_volume} | wc -l)
+      if [ "${no_vdo_verify}" -eq 0 ] &&
+         ! ${ssh} ${target} "test -d ${review_volume_dir}"
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    fi
+
+    pad " · Ensuring clean additional disks on ${target}"
+    ${ssh} ${target} "dd if=/dev/zero of=${review_disk1} bs=500M count=2"
+    ${ssh} ${target} "dd if=/dev/zero of=${review_disk2} bs=500M count=2"
+    ${ssh} ${target} "dd if=/dev/zero of=${review_disk3} bs=500M count=2"
+    disk1_part=$(${ssh} ${target} "lsblk ${review_disk1}" | sed '1d' | grep -E 'part|stratis|vdo' | wc -l)
+    disk2_part=$(${ssh} ${target} "lsblk ${review_disk2}" | sed '1d' | grep -E 'part|stratis|vdo' | wc -l)
+    disk3_part=$(${ssh} ${target} "lsblk ${review_disk3}" | sed '1d' | grep -E 'part|stratis|vdo' | wc -l)
+    if [ "${disk1_part}" -eq 0 ] &&
+       [ "${disk2_part}" -eq 0 ] &&
+       [ "${disk3_part}" -eq 0 ]
+    then
+      print_SUCCESS
+    else
+      ${ssh} ${target} "stratis fs destroy ${review_stratis_pool} ${review_stratis_fs_snapshot}"
+      ${ssh} ${target} "stratis fs destroy ${review_stratis_pool} ${review_stratis_fs}"
+      ${ssh} ${target} "stratis pool destroy ${review_stratis_pool}"
+      ${ssh} ${target} "umount ${review_volume_dir}"
+      ${ssh} ${target} "vdo remove --name=${review_vdo_volume}"
+      ${ssh} ${target} "dd if=/dev/zero of=${review_disk1} bs=500M count=2"
+      ${ssh} ${target} "dd if=/dev/zero of=${review_disk2} bs=500M count=2"
+      ${ssh} ${target} "dd if=/dev/zero of=${review_disk3} bs=500M count=2"
+      disk1_part=$(${ssh} ${target} "lsblk ${review_disk1}" | sed '1d' | grep -E 'part|stratis|vdo' | wc -l)
+      disk2_part=$(${ssh} ${target} "lsblk ${review_disk2}" | sed '1d' | grep -E 'part|stratis|vdo' | wc -l)
+      disk3_part=$(${ssh} ${target} "lsblk ${review_disk3}" | sed '1d' | grep -E 'part|stratis|vdo' | wc -l)
+      if [ "${disk1_part}" -eq 0 ] &&
+         [ "${disk2_part}" -eq 0 ] &&
+         [ "${disk3_part}" -eq 0 ]
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    fi
+
+    print_line
+  fi
+}
+
+
+function lab_grade {
+
+  print_header "Grading the student's work on ${target}:"
+  host_reachable ${target}
+
+  # Put in the steps to grade the lab (use print_PASS or print_FAIL)
+  pad " · Verifying the stratis file system on ${target}"
+  stratis_fs_verify=$(${ssh} ${target} "stratis filesystem list" | grep -v ${review_stratis_fs_snapshot} | grep ${review_stratis_fs} | wc -l)
+  stratis_mount_verify=$(${ssh} ${target} "mount" | grep -v ${review_fs_snap_mount} | grep ${review_fs_mount} | grep xfs | wc -l)
+  if [ ${stratis_fs_verify} -eq 1 ] &&
+     [ ${stratis_mount_verify} -eq 1 ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying the stratis snapshot on ${target}"
+  ${ssh} ${target} "[ -d ${review_fs_snap_mount} ] || mkdir ${review_fs_snap_mount}"
+  stratis_snap_verify=$(${ssh} ${target} "stratis filesystem list" | grep ${review_stratis_fs_snapshot} | wc -l)
+  ${ssh} ${target} "mount ${review_stratis_fs_snapshot_node} ${review_fs_snap_mount}"
+  stratis_snap_mount_verify=$(${ssh} ${target} "mount" | grep ${review_fs_snap_mount} | grep xfs | wc -l)
+  if [ ${stratis_snap_verify} -eq 1 ] &&
+     [ ${stratis_snap_mount_verify} -eq 1 ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying the files in the stratis file system on ${target}"
+  if ${ssh} ${target} "test -s ${review_fs_mount}/${review_file2}"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying the files in stratis snapshot on ${target}"
+  if ${ssh} ${target} "test -f ${review_fs_snap_mount}/${review_file1}" &&
+     ${ssh} ${target} "test -s ${review_fs_snap_mount}/${review_file1}" &&
+     ${ssh} ${target} "test -s ${review_fs_snap_mount}/${review_file2}"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying the VDO volume on ${target}"
+  vdo_volume_verify=$(${ssh} ${target} "vdo status -n ${review_vdo_volume}" | grep -i size | grep Logical | grep 50G | wc -l)
+  vdo_mount_verify=$(${ssh} ${target} "mount" | grep ${review_volume_dir} | grep xfs | wc -l)
+  if [ ${vdo_volume_verify} -eq 1 ] &&
+     [ ${vdo_mount_verify} -eq 1 ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying the files in VDO volume on ${target}"
+  if ${ssh} ${target} "test -s ${review_volume_dir}/install.img.1" &&
+     ${ssh} ${target} "test -s ${review_volume_dir}/install.img.2"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  # Overall grade
+  print_line
+  pad 'Overall lab grade'
+  if [[ ${fail_count} -eq 0 ]]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  print_line
+}
+
+
+function lab_finish {
+
+  print_header "Completing the lab on ${target}:"
+  host_reachable ${target}
+
+  pad " · Removing ${review_stratis_fs_snapshot} from on ${target}"
+  ${ssh} ${target} "yum -y install stratisd stratis-cli" &&
+  ${ssh} ${target} "systemctl start stratisd.service" &&
+  ${ssh} ${target} "umount ${review_fs_snap_mount}"
+  ${ssh} ${target} "stratis fs destroy ${review_stratis_pool} ${review_stratis_fs_snapshot}"
+  stratis_fs1=$(${ssh} ${target} "stratis fs list" | grep ${review_stratis_fs_snapshot} | wc -l)
+  if [ "${stratis_fs1}" -eq 0 ]
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Removing ${review_stratis_fs} from ${target}"
+  ${ssh} ${target} "umount ${review_fs_mount}"
+  ${ssh} ${target} "stratis fs destroy ${review_stratis_pool} ${review_stratis_fs}"
+  stratis_fs1=$(${ssh} ${target} "stratis fs list" | grep ${review_stratis_fs} | wc -l)
+  if [ "${stratis_fs1}" -eq 0 ]
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Removing ${review_stratis_pool} from ${target}"
+  ${ssh} ${target} "stratis pool destroy ${review_stratis_pool}"
+  stratis_pool1=$(${ssh} ${target} "stratis pool list" | grep ${review_stratis_pool} | wc -l)
+  if [ "${stratis_pool1}" -eq 0 ]
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Removing ${review_fs_mount} from ${target}"
+  ${ssh} ${target} "rm -rf ${review_fs_mount}"
+  if ! ${ssh} ${target} "test -e ${review_fs_mount}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Removing ${review_fs_snap_mount} from ${target}"
+  ${ssh} ${target} "rm -rf ${review_fs_snap_mount}"
+  ${ssh} ${target} "yum -y remove stratisd stratis-cli" &&
+  ${ssh} ${target} "systemctl stop stratisd.service"
+  if ! ${ssh} ${target} "test -e ${review_fs_snap_mount}" &&
+     ! ${ssh} ${target} "rpm -q stratisd stratis-cli"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Removing install.img from ${target}"
+  if ! ${ssh} ${target} "test -e ${review_source_file}"
+  then
+    print_SUCCESS
+  else
+    ${ssh} ${target} "rm -rf ${review_source_file}*"
+    if ! ${ssh} ${target} "test -e ${review_source_file}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  pad " · Removing ${review_vdo_volume} volume from ${target}"
+  ${ssh} ${target} "umount ${review_volume_dir}"
+  ${ssh} ${target} "rm -rf ${review_volume_dir}"
+  no_vdo_verify=$(${ssh} ${target} "vdo list" | grep ${review_vdo_volume} | wc -l)
+  if [ "${no_vdo_verify}" -eq 0 ] &&
+     ! ${ssh} ${target} "test -d ${review_volume_dir}"
+  then
+    print_SUCCESS
+  else
+    ${ssh} ${target} "vdo remove --name=${review_vdo_volume}"
+    no_vdo_verify=$(${ssh} ${target} "vdo list" | grep ${review_vdo_volume} | wc -l)
+    if [ "${no_vdo_verify}" -eq 0 ] &&
+       ! ${ssh} ${target} "test -d ${review_volume_dir}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  pad " · Ensuring clean additional disks on ${target}"
+  ${ssh} ${target} "dd if=/dev/zero of=${review_disk1} bs=500M count=1"
+  ${ssh} ${target} "dd if=/dev/zero of=${review_disk2} bs=500M count=1"
+  ${ssh} ${target} "dd if=/dev/zero of=${review_disk3} bs=500M count=1"
+  disk1_part=$(${ssh} ${target} "lsblk ${review_disk1}" | sed '1d' | grep -E 'part|stratis|vdo' | wc -l)
+  disk2_part=$(${ssh} ${target} "lsblk ${review_disk2}" | sed '1d' | grep -E 'part|stratis|vdo' | wc -l)
+  disk3_part=$(${ssh} ${target} "lsblk ${review_disk3}" | sed '1d' | grep -E 'part|stratis|vdo' | wc -l)
+  if [ "${disk1_part}" -eq 0 ] &&
+     [ "${disk2_part}" -eq 0 ] &&
+     [ "${disk3_part}" -eq 0 ]
+  then
+    print_SUCCESS
+  else
+    ${ssh} ${target} "stratis fs destroy ${review_stratis_pool} ${review_stratis_fs_snapshot}"
+    ${ssh} ${target} "stratis fs destroy ${review_stratis_pool} ${review_stratis_fs}"
+    ${ssh} ${target} "stratis pool destroy ${review_stratis_pool}"
+    ${ssh} ${target} "umount ${review_volume_dir}"
+    ${ssh} ${target} "vdo remove --name=${review_vdo_volume}"
+    ${ssh} ${target} "dd if=/dev/zero of=${review_disk1} bs=500M count=2"
+    ${ssh} ${target} "dd if=/dev/zero of=${review_disk2} bs=500M count=2"
+    ${ssh} ${target} "dd if=/dev/zero of=${review_disk3} bs=500M count=2"
+    disk1_part=$(${ssh} ${target} "lsblk ${review_disk1}" | sed '1d' | grep -E 'part|stratis|vdo' | wc -l)
+    disk2_part=$(${ssh} ${target} "lsblk ${review_disk2}" | sed '1d' | grep -E 'part|stratis|vdo' | wc -l)
+    disk3_part=$(${ssh} ${target} "lsblk ${review_disk3}" | sed '1d' | grep -E 'part|stratis|vdo' | wc -l)
+    if [ "${disk1_part}" -eq 0 ] &&
+       [ "${disk2_part}" -eq 0 ] &&
+       [ "${disk3_part}" -eq 0 ]
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  pad " · Restoring original /etc/fstab on ${target}"
+  ${ssh} ${target} "cp /tmp/fstab.orig /etc/fstab"
+  ${ssh} ${target} "rm -f /tmp/fstab.orig"
+  if ! ${ssh} ${target} "grep ${review_fs_mount} /etc/fstab" &&
+     ! ${ssh} ${target} "grep ${review_volume_dir} /etc/fstab"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

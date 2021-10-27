@@ -1,0 +1,101 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-cli-review - grading script for RH124 CH02-Accessing the Command
+#     Line lab
+#
+# SYNOPSIS
+#     lab-template {start|grade|finish}
+#
+#        start   - prepare the system for starting the lab
+#        grade   - perform evaluation steps on the system
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start, grading,
+#     or finish for the CH02-Accessing the Command Line lab.
+#
+# CHANGELOG
+#   * Tue Jan 22 2019 Snehangshu Karmakar <snehk@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='workstation'
+
+declare -a valid_commands=(start grade finish)
+
+destfile='/usr/bin/zcat'
+srcfile='/home/student/zcat'
+
+function lab_start {
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} for lab exercise work:"
+  print_line
+
+  pad ' · Ensuring a clean lab environment'
+  cmd1="echo student | passwd --stdin student"
+  if ${cmd1}; then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi  
+  pad " · Copying file required for lab tasks"
+  cmd2=$(su -l student -c "cp ${destfile} /home/student/")
+  if ${cmd2}; then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi  
+  print_line
+}
+
+function lab_grade {
+
+  print_header "Grading the student's work on ${target}:"
+  #host_reachable ${target}
+
+  pad ' · You completed attempting these tasks'
+  print_PASS
+
+  # Overall grade
+  print_line
+  pad 'Overall lab grade'
+  if [[ ${fail_count} -eq 0 ]]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  print_line
+}
+
+function lab_finish {
+
+  print_header "Cleaning up the lab on ${target}:"
+  pad " · Removing the files created"
+  rm -rf ${srcfile}
+  if ! -f ${srcfile}; then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi  
+
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

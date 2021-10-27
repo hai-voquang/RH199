@@ -1,0 +1,203 @@
+#!/bin/bash
+#
+# Copyright 2019, 2020 Red Hat, Inc.
+#
+# NAME
+#     lab-users-review - grading script for RH124 Managing Local Users and Groups
+#
+# SYNOPSIS
+#     lab-users-pw-manage {start|grade|finish}
+#
+#        start   - prepare the system for starting the lab
+#        grade   - perform evaluation steps on the system
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start, grading,
+#     or finish for the Managing Local Users and Groups Lab.
+#
+# CHANGELOG
+#   * Mon Sep 21 2020 Herve Quatremain <hquatrem@redhat.com>
+#   - Checking sudo configuration - Jira RH124-576
+#   * Fri May 17 2019 Saumik Paul <saumik@redhat.com>
+#   - changed lab gid from 40000 to 35000 to avoid conflict
+#   - leveraged user and group library functions to simplify the code
+#   * Tue Jan 24 2019 Saumik Paul <saumik@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='serverb'
+lab_user1='consultant1'
+lab_user2='consultant2'
+lab_user3='consultant3'
+lab_user_pw='redhat'
+lab_grp='consultants'
+lab_gid='35000'
+passwd='/etc/passwd'
+shadow='/etc/shadow'
+group='/etc/group'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start grade finish)
+
+
+function lab_start {
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} for lab exercise work:"
+  print_line
+  host_reachable ${target}
+
+  rhel_backup ${target} /etc/login.defs /etc/sudoers /etc/sudoers.d
+
+  rhel_del_user ${target} ${lab_user1}
+  rhel_del_user ${target} ${lab_user2}
+  rhel_del_user ${target} ${lab_user3}
+
+  rhel_del_group ${target} ${lab_grp}
+
+  print_line
+}
+
+
+function lab_grade {
+
+  print_header "Grading the student's work on ${target}:"
+  host_reachable ${target}
+
+  # Put in the steps to grade the lab (use print_PASS or print_FAIL)
+  pad " · The group ${lab_grp} with GID ${lab_gid} exists in ${target}"
+  consultants_id=$(${ssh} ${target} "getent group ${lab_grp} | cut -d: -f3")
+  if [ "${consultants_id}" -eq ${lab_gid} ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying the group membership of ${lab_grp} on ${target}"
+  consultants_members=$(${ssh} ${target} "getent group ${lab_grp} | cut -d: -f4")
+  if [ "${consultants_members}" == "${lab_user1},${lab_user2},${lab_user3}" ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying the sudo access of ${lab_grp} on ${target}"
+  if ${ssh} ${target} "grep -E '^[[:space:]]*%${lab_grp}[[:space:]].*=.*\(.*ALL.*\)[[:space:]].*ALL' /etc/sudoers /etc/sudoers.d/*"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying password expiry of ${lab_grp} on ${target}"
+  age_pw_user1=$(${ssh} ${target} "getent shadow ${lab_user1} | cut -d: -f5")
+  age_pw_user2=$(${ssh} ${target} "getent shadow ${lab_user2} | cut -d: -f5")
+  age_pw_user3=$(${ssh} ${target} "getent shadow ${lab_user3} | cut -d: -f5")
+  if [ "${age_pw_user1}" -eq 30 ] &&
+     [ "${age_pw_user2}" -eq 15 ] &&
+     [ "${age_pw_user3}" -eq 30 ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying account expiry of ${lab_grp} on ${target}"
+  utc_time_in_secs=$(date +%s)
+  zone_time_field1=$(date +%::z | tail -c 10 | cut -d: -f1)
+  zone_time_field2=$(date +%::z | tail -c 10 | cut -d: -f2)
+  zone_time_field3=$(date +%::z | tail -c 10 | cut -d: -f3)
+  local_time_diff_with_utc_in_secs=$(echo $[${zone_time_field1}*3600+${zone_time_field2}*60+${zone_time_field3}])
+  local_nonutc_time_in_secs=$(echo $[${local_time_diff_with_utc_in_secs}+${utc_time_in_secs}])
+  local_nonutc_time_in_days=$(echo $[${local_nonutc_time_in_secs}/86400])
+  account_expiry_date=$(echo $[${local_nonutc_time_in_days}+90])
+  account_expiry_user1=$(${ssh} ${target} "getent shadow ${lab_user1} | cut -d: -f8")
+  account_expiry_user2=$(${ssh} ${target} "getent shadow ${lab_user2} | cut -d: -f8")
+  account_expiry_user3=$(${ssh} ${target} "getent shadow ${lab_user3} | cut -d: -f8")
+  if [ "${account_expiry_user1}" -eq "${account_expiry_date}" ] &&
+     [ "${account_expiry_user2}" -eq "${account_expiry_date}" ] &&
+     [ "${account_expiry_user3}" -eq "${account_expiry_date}" ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying default password expiry of users on ${target}"
+  age_default_user='default_user'
+  ${ssh} ${target} "useradd ${age_default_user}"
+  age_default_user_verify=$(${ssh} ${target} "getent shadow ${age_default_user} | cut -d: -f5")
+  if [ "${age_default_user_verify}" -eq 30 ] &&
+     ${ssh} ${target} userdel -r ${age_default_user}
+  then
+    print_PASS
+  else
+    ${ssh} ${target} userdel -r ${age_default_user} &&
+    print_FAIL
+  fi
+
+  pad " · Verifying password change date of ${lab_grp} on ${target}"
+  change_day_pw_user1=$(${ssh} ${target} "getent shadow ${lab_user1} | cut -d: -f3")
+  change_day_pw_user2=$(${ssh} ${target} "getent shadow ${lab_user2} | cut -d: -f3")
+  change_day_pw_user3=$(${ssh} ${target} "getent shadow ${lab_user3} | cut -d: -f3")
+  if [ "${change_day_pw_user1}" -eq 0 ] &&
+     [ "${change_day_pw_user2}" -eq 0 ] &&
+     [ "${change_day_pw_user3}" -eq 0 ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+
+  # Overall grade
+  print_line
+  pad 'Overall lab grade'
+  if [[ ${fail_count} -eq 0 ]]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  print_line
+}
+
+
+function lab_finish {
+
+  print_header "Completing the lab on ${target}:"
+  host_reachable ${target}
+
+  rhel_restore ${target}
+
+  rhel_del_user ${target} ${lab_user1}
+  rhel_del_user ${target} ${lab_user2}
+  rhel_del_user ${target} ${lab_user3}
+
+  rhel_del_group ${target} ${lab_grp}
+
+  pad " · Restoring sudo configuration on ${target}"
+  ${ssh} ${target}  "grep -li consultant /etc/sudoers.d/* | xargs rm -f"
+  print_SUCCESS
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

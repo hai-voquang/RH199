@@ -1,0 +1,135 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-users-pw-manage - grading script for RH124 Managing User Passwords
+#
+# SYNOPSIS
+#     lab-users-pw-manage {start|finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start
+#     or finish for the Managing User Passwords Guided Exercise. 
+#
+# CHANGELOG
+#   * Tue Jan 24 2019 Saumik Paul <saumik@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='servera'
+ge_opuser1='operator1'
+ge_opuser2='operator2'
+ge_opuser3='operator3'
+ge_admuser1='sysadmin1'
+ge_admuser2='sysadmin2'
+ge_admuser3='sysadmin3'
+ge_user_pw='redhat'
+ge_opgrp='operators'
+ge_admgrp='admin'
+passwd='/etc/passwd'
+shadow='/etc/shadow'
+group='/etc/group'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start finish)
+
+
+function lab_start {
+
+  reqd_package='shadow-utils'        # Just an example
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} for lab exercise work:"
+  print_line
+  host_reachable ${target}
+
+
+  # Check for lab prerequisites (perhaps a required package?).
+  if ! ${ssh} ${target} "rpm -q --quiet ${reqd_package}"
+  then
+    pad " · Error - ${reqd_package} is not installed on ${target}"
+    print_FAIL
+  else
+    pad " · Creating ${ge_opuser1} on ${target}"
+    if ${ssh} ${target} "grep ${ge_opuser1} ${passwd} ${shadow}"
+    then
+      print_SUCCESS
+    elif ${ssh} ${target} "userdel -r ${ge_opuser1}; useradd ${ge_opuser1} && echo ${ge_user_pw} | passwd --stdin ${ge_opuser1}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Verifying the password of ${ge_opuser1} on ${target}"
+    if ${ssh} ${target} "echo ${ge_user_pw} | su - ${ge_opuser1} -c whoami"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Backing up /etc/login.defs on ${target}"
+    if ${ssh} ${target} "cp -f /etc/login.defs /tmp/login.defs.orig"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    print_line
+  fi
+}
+
+function lab_finish {
+
+  print_header "Completing the lab on ${target}:"
+  host_reachable ${target}
+
+  pad " · Deleting ${ge_opuser1} from ${target}"
+  ${ssh} ${target} "userdel -r ${ge_opuser1}" 
+  if ! ${ssh} ${target} "getent user ${ge_opuser1}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi    
+
+  pad " · Restoring original /etc/login.defs on ${target}"
+  if ! ${ssh} ${target} "grep -i PASS_MAX_DAYS /etc/login.defs" | grep -E '180' &&
+     ! ${ssh} ${target} "test -f /tmp/login.defs.orig"
+  then
+    print_SUCCESS
+  else
+    ${ssh} ${target} "cp /tmp/login.defs.orig /etc/login.defs"
+    ${ssh} ${target} "rm -f /tmp/login.defs.orig"
+    if ! ${ssh} ${target} "grep -i PASS_MAX_DAYS /etc/login.defs" | grep -E '180' &&
+       ! ${ssh} ${target} "test -f /tmp/login.defs.orig"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

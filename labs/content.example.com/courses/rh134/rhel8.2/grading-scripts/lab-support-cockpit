@@ -1,0 +1,116 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-support-cockpit - grading script for RH124 RHEL8
+#                           Remote Server Analysis and Management with Cockpit
+#
+# SYNOPSIS
+#     lab-support-cockpit {start|finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start, or finish for
+#     the Remote Server Analysis and Management with Cockpit guided exercise.
+#
+# CHANGELOG
+#   * Fri Mar 08 2019 Victor Costea <vcostea@redhat.com>
+#   - Removed references to serverb because it is no longer used in this GE
+#   * Tue Feb 26 2019 Victor Costea <vcostea@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='servera'
+cockpit_user='manager1'
+psacct_svc='psacct'
+ip4_addr='172.25.250.99/24'
+ip4_con='Wired connection 1'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start finish)
+
+
+function lab_start {
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} and ${targetb} for lab exercise work:"
+  print_line
+  pad " · Check ${target} connectivity"
+  host_reachable ${target}
+  print_SUCCESS
+
+  print_line
+}
+
+function lab_finish {
+
+  print_header "You have completed attempting the guided exercise."
+
+  pad " · Checking ${target}."
+  host_reachable ${target}
+  print_SUCCESS
+
+  pad " · Removing ${cockpit_user} on ${target}"
+  id_user="id ${cockpit_user}"
+  rm_cpit_user="userdel -r ${cockpit_user}"
+  if ${ssh} ${target} ${id_user}
+  then
+    ${ssh} ${target} ${rm_cpit_user}
+    print_SUCCESS
+  elif ! ${ssh} ${target} ${id_user}
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Restore default state of ${psacct_svc} on ${target}"
+  svc_state="systemctl is-enabled ${psacct_svc} || systemctl is-active ${psacct_svc}"
+  disable_svc="systemctl disable --now ${psacct_svc}"
+  if ${ssh} ${target} ${svc_state}
+  then
+    ${ssh} ${target} ${disable_svc}
+    print_SUCCESS
+  elif ! ${ssh} ${target} ${svc_state}
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Remove IP address ${ip4_addr} from ${ip4_con}"
+  get_ip4_addr="nmcli -g ip4.address connection show '${ip4_con}' | grep '${ip4_addr}'"
+  rm_ip4_addr="nmcli connection modify '${ip4_con}' -ipv4.addresses '${ip4_addr}'"
+  con_reset="nmcli conn down '${ip4_con}' && nmcli conn up '${ip4_con}'"
+  if ${ssh} ${target} '${get_ip4_addr}'
+  then
+    ${ssh} ${target} "${rm_ip4_addr}"
+    ${ssh} ${target} "${con_reset}"
+          print_SUCCESS
+  elif ! ${ssh} ${target} "${get_ip4_addr}"
+  then
+          print_SUCCESS
+  else
+          print_FAIL
+  fi
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

@@ -1,0 +1,129 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-net-configure - grading script for RH124 Guided Exercise
+#                         Configuring Networking from the Command Line
+#
+# SYNOPSIS
+#     lab-net-configure {start|finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start or
+#     finish for the Configuring Networking from the Command Line 
+#     guided exercise.
+#
+# CHANGELOG
+#   * Mon May 27 2019 Victor Costea <vcostea@redhat.com>
+#   - Update finish script to check for /tmp/defprofile
+#   - Add remove /tmp/defprofile to the end of finish
+#   * Thu Feb 07 2019 Victor Costea <vcostea@redhat.com>
+#   - original code
+#   * Tue Apr 16 2019 Saumik Paul <saumik@redhat.com>
+#   - modified code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='servera'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start finish)
+
+
+function lab_start {
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} for lab exercise work:"
+  print_line
+  pad " · Check ${target} connectivity"
+  host_reachable ${target}
+  print_SUCCESS
+  
+  pad " · Storing the default profile"
+  echo $(${ssh} ${target} "nmcli -t -f NAME c show --active") > /tmp/defprofile
+  print_SUCCESS
+  print_line
+}
+
+
+function lab_finish {
+
+  #default_nic=$(get_nicname ${target} 1)
+  #default_nic_hwaddr=$(${ssh} ${target} "cat /sys/class/net/${default_nic}/address")
+  #default_ifcfg_file=$(${ssh} ${target} "grep -i -H -e ${default_nic_hwaddr} -e ${default_nic} /etc/sysconfig/network-scripts/*" | grep -v static | cut -d: -f1 | grep -v backup)
+  #default_con_profile=$(${ssh} ${target} "grep -i name ${default_ifcfg_file}" | awk -F"=" '{ print $2 }')
+  default_con_profile="$(cat /tmp/defprofile)"
+  static_con_profile="static-addr"
+
+  print_header "Cleaning up the lab on ${target}:"
+
+  pad " · Check ${target}"
+  host_reachable ${target}
+  print_SUCCESS
+
+  # Check for /tmp/defprofile before activating the default connection profile
+  if [ -f /tmp/defprofile ]
+  then
+    pad " · Activate ${default_con_profile}"
+    if ${ssh} ${target} "nmcli -t -f NAME c show --active" | grep "${default_con_profile}"; then
+      print_SUCCESS
+    else 
+      if ${ssh} ${target} "nmcli con up '${default_con_profile}'"; then
+        print_SUCCESS
+      else
+        print_FAIL
+      fi
+    fi
+  fi
+
+  # Check for /tmp/defprofile before auto connecting the default connection profile
+  if [ -f /tmp/defprofile ]
+  then
+    pad " · Auto connect ${default_con_profile}"
+    if ${ssh} ${target} "nmcli con show '${default_con_profile}' | grep connection.autoconnect: * yes"; then
+      print_SUCCESS
+    else
+      if ${ssh} ${target} "nmcli con mod '${default_con_profile}' connection.autoconnect yes"; then
+        print_SUCCESS
+      else
+        print_FAIL
+      fi
+    fi   
+  fi
+
+  pad " · Remove ${static_con_profile}"
+  if ${ssh} ${target} "nmcli con show ${static_con_profile}"; then
+    if ${ssh} ${target} "nmcli con delete ${static_con_profile}"; then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  else
+    print_SUCCESS
+  fi 
+
+  # Remove /tmp/defprofile created by the start function
+  pad " · Remove /tmp/defprofile"
+  rm -f /tmp/defprofile
+  print_SUCCESS
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

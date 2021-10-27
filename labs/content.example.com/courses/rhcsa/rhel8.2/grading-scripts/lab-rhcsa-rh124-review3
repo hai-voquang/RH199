@@ -1,0 +1,403 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-rhcsa-rh124-review3 - grading script for RH124 Comprehensive Review
+#     Configuring and Managing a Server
+#
+# SYNOPSIS
+#     lab-rhcsa-rh124-review3 {start|grade|finish}
+#
+#        start   - prepare the system for starting the lab
+#	 grade   - perform evaluation steps on the system
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start
+#     or finish for the Comprehensive Review Configuring and Managing a Server.
+#
+# CHANGELOG
+#   * Thu Mar 08 2019 Saumik Paul <saumik@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='workstation'
+targeta='servera'
+targetb='serverb'
+comp_review3_user='dbuser1'
+comp_review3_group='database'
+comp_review3_sshd_config='/etc/ssh/sshd_config'
+comp_review3_sshd_key='/home/student/.ssh/review3_key'
+comp_review3_sshd_key_pub='/home/student/.ssh/review3_key.pub'
+zsh_pkg='zsh'
+python36_module='python36'
+python36_pkg1='python36'
+python36_pkg2='python3-pip'
+content_rhel_ver='rhel8.2'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start grade finish)
+
+
+function lab_start {
+
+  reqd_package='coreutils openssh-server rsyslog'        # Just an example
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${targetb} for lab exercise work:"
+  print_line
+  host_reachable ${targetb}
+
+
+  # Check for lab prerequisites (perhaps a required package?).
+  if ! ${ssh} ${targetb} "rpm -q --quiet ${reqd_package}"
+  then
+    pad " · Error - ${reqd_package} is not installed on ${targetb}"
+    print_FAIL
+  else
+    pad " · Enabling sshpass on ${target}"
+    if "test -f /etc/yum.repos.d/ansible.repo" &&
+       "test -s /etc/yum.repos.d/ansible.repo"
+    then
+      if yum -y install sshpass
+      then
+        print_SUCCESS
+      else
+        print_FAIL
+      fi
+    else
+      cat > /tmp/ansible.repo << EOF
+[ansible-2.9-for-rhel-8-x86_64-rpms]
+baseurl = http://content.example.com/${content_rhel_ver}/x86_64/rhel8-additional/ansible-2.9-for-rhel-8-x86_64-rpms
+enabled = true
+gpgcheck = false
+name = Red Hat Enterprise Linux 8.0 Additional (dvd)
+EOF
+      if cp /tmp/ansible.repo /etc/yum.repos.d/ &&
+         rm -f /tmp/ansible.repo &&
+         yum -y install sshpass
+      then
+        print_SUCCESS
+      else
+        print_FAIL
+      fi
+    fi
+
+    pad " · Backing up ${comp_review3_sshd_config} on ${targetb}"
+    if ${ssh} ${targetb} "cp ${comp_review3_sshd_config} /tmp/sshd_config.orig"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Ensuring that custom log files do not exist on ${targetb}"
+    if ! ${ssh} ${targetb} "test -e /var/log/grading-debug" &&
+       ! ${ssh} ${targetb} "test -e /etc/rsyslog.d/grading-debug.conf"
+    then
+      print_SUCCESS
+    else
+      ${ssh} ${targetb} "rm -rf /var/log/grading-debug /etc/rsyslog.d/grading-debug.conf"
+      if ! ${ssh} ${targetb} "test -e /var/log/grading-debug" &&
+	 ! ${ssh} ${targetb} "test -e /etc/rsyslog.d/grading-debug.conf"
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    fi
+
+    pad " · Recording pre-Lab time zone on ${targetb}"
+    ${ssh} ${targetb} "timedatectl | grep 'Time zone:' | tr -s ' ' | cut -d' ' -f4" > /tmp/time_zone_${targetb}
+    if [ -f /tmp/time_zone_${targetb} ] &&
+       [ -s /tmp/time_zone_${targetb} ]
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Ensuring that ${zsh_pkg} is not installed on ${targetb}"
+    ${ssh} ${targetb} "yum -y remove ${zsh_pkg}"
+    if ! ${ssh} ${targetb} "rpm -q ${zsh_pkg}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Ensuring that ${python36_module} is not enabled on ${targetb}"
+    ${ssh} ${targetb} "yum -y remove ${python36_pkg1} ${python36_pkg2}" &&
+    ${ssh} ${targetb} "yum -y module disable ${python36_module}"
+    if ${ssh} ${targetb} "yum module list | grep python36 | grep '[e]'" &&
+       ! ${ssh} ${targetb} "rpm -q ${python36_pkg1} ${python36_pkg2}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    print_line
+  fi
+}
+
+function lab_grade {
+
+  print_header "Grading the student's work on ${targetb}:"
+  host_reachable ${targetb}
+
+  # Put in the steps to grade the lab (use print_PASS or print_FAIL)
+
+
+  pad " · Verifying SSH keys on ${targetb}"
+  targeta_hostname=$(${ssh} student@${targetb} "ssh -i ${comp_review3_sshd_key} student@servera hostname")
+  if [ "$targeta_hostname" == "servera.lab.example.com" ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Evaluating root login settings on ${targetb}"
+  if rpm -q sshpass
+  then
+    if ! sshpass -predhat ssh -o passwordauthentication=yes -o pubkeyauthentication=no root@${targetb} "whoami"
+    then
+      print_PASS
+    else
+      print_FAIL
+    fi
+  else
+    cat > /tmp/ansible.repo << EOF
+[ansible-2.9-for-rhel-8-x86_64-rpms]
+baseurl = http://content.example.com/${content_rhel_ver}/x86_64/rhel8-additional/ansible-2.9-for-rhel-8-x86_64-rpms
+enabled = true
+gpgcheck = false
+name = Red Hat Enterprise Linux 8.0 Additional (dvd)
+EOF
+    cp /tmp/ansible.repo /etc/yum.repos.d/ &&
+    rm -f /tmp/ansible.repo &&
+    if yum -y install sshpass &&
+       ! sshpass -predhat ssh -o passwordauthentication=yes -o pubkeyauthentication=no root@${targetb} "whoami"
+    then
+      print_PASS
+    else
+      print_FAIL
+    fi
+  fi
+
+
+  pad " · Evaluating password login settings on ${targetb}"
+  if ! sshpass -pstudent ssh -o passwordauthentication=yes -o pubkeyauthentication=no student@${targetb} "whoami" &&
+     yum -y remove sshpass &&
+     ! rpm -q sshpass
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying archives on on ${targetb}"
+  archive_targeta=$(ssh student@servera "file -b /tmp/log.tar")
+  archive_targetb=$(ssh student@serverb "file -b /tmp/log.tar")
+  if [ "${archive_targeta}" == "POSIX tar archive (GNU)" ] &&
+     [ "${archive_targetb}" == "POSIX tar archive (GNU)" ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying syslog custom configuration on ${targetb}"
+  ssh student@serverb "echo student | sudo -S logger -p local7.debug 'Debug Testing'"
+  if ssh student@serverb "echo student | sudo -S grep 'Debug Testing' /var/log/grading-debug"
+  then
+    print_PASS
+  else
+    if ssh student@serverb "echo student | sudo -S systemctl restart rsyslog.service" &&
+       ssh student@serverb "echo student | sudo -S grep 'Debug Testing' /var/log/grading-debug"
+    then
+      print_PASS
+    else
+      print_FAIL
+    fi
+  fi
+
+  pad " · Evaluating timezone on ${targetb}"
+  if ssh student@serverb "timedatectl | grep 'Time zone' | grep 'Asia/Kolkata'"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying that ${zsh_pkg} is installed on ${targetb}"
+  if ssh student@serverb "rpm -q ${zsh_pkg}"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying that ${python36_module} is enabled on ${targetb}"
+  if ssh student@serverb "yum module list | grep python36 | grep '[e]'" &&
+     ssh student@serverb "rpm -q ${python36_pkg1}" &&
+     ssh student@serverb "rpm -q ${python36_pkg2}"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  # Overall grade
+  print_line
+  pad 'Overall lab grade'
+  if [[ ${fail_count} -eq 0 ]]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  print_line
+}
+
+
+function lab_finish {
+
+  print_header "Completing the lab on ${target}:"
+  host_reachable ${target}
+
+  reqd_package='coreutils openssh-server rsyslog'        # Just an example
+
+  pad " · Ensuring that the environment is clean on ${target}"
+  if ${ssh} ${target} "rpm -q --quiet ${reqd_package}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Revoking SSH keys from ${targetb}"
+  if ssh student@serverb "rm -f /home/student/.ssh/review3_key*" &&
+     ! ssh student@serverb "test -f ${comp_review3_sshd_key_pub}" &&
+     ! ssh student@serverb "test -f ${comp_review3_sshd_key}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Restoring ${comp_review3_sshd_config} on ${targetb}"
+  if ssh student@serverb "echo student | sudo -S cp /tmp/sshd_config.orig ${comp_review3_sshd_config}" &&
+     ssh student@serverb "echo student | sudo -S systemctl restart sshd.service"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Removing custom log files from ${targetb}"
+  ssh student@serverb "echo student | sudo -S rm -f /var/log/grading-debug"
+  ssh student@serverb "echo student | sudo -S rm -f /etc/rsyslog.d/grading-debug.conf"
+  if ! ssh student@serverb "echo student | sudo -S test -e /var/log/grading-debug" &&
+     ! ssh student@serverb "echo student | sudo -S test -e /etc/rsyslog.d/grading-debug.conf"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Removing archives from ${targeta} and ${targetb}"
+  ${ssh} ${targeta} "rm -f /tmp/log.tar"
+  ${ssh} ${targetb} "rm -f /tmp/log.tar"
+  if ! ${ssh} ${targeta} "test -e /tmp/log.tar" &&
+     ! ${ssh} ${targetb} "test -e /tmp/log.tar"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Restoring original time zone on ${targetb}"
+  if ! [ -f /tmp/time_zone_${targetb} ]
+  then
+    print_SUCCESS
+  else
+    ${ssh} ${targetb} "timedatectl set-timezone $(cat /tmp/time_zone_${targetb})"
+    original_time_zone=$(${ssh} ${targetb} "timedatectl | grep 'Time zone:' | tr -s ' ' | cut -d' ' -f4")
+    recorded_time_zone=$(cat /tmp/time_zone_${targetb})
+    if [ "${original_time_zone}" == "${recorded_time_zone}" ] &&
+       rm -f /tmp/time_zone_${targetb}
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  pad " · Removing ${zsh_pkg} from ${targetb}"
+  ${ssh} ${targetb} "yum -y remove ${zsh_pkg}"
+  if ! ${ssh} ${targetb} "rpm -q ${zsh_pkg}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  #pad " · Disabling ${python36_module} on ${targetb}"
+  #if ! ${ssh} ${targetb} "yum module list | grep python36 | grep '[e]'" &&
+  #   ! ${ssh} ${targetb} "rpm -q ${python36_pkg1} ${python36_pkg2}"
+  #then
+  #  print_SUCCESS
+  #else
+  #  ${ssh} ${targetb} "yum -y remove ${python36_pkg1} ${python36_pkg2}" &&
+  #  ${ssh} ${targetb} "yum -y module disable ${python36_module}"
+  #  if ${ssh} ${targetb} "yum module list | grep python36 | grep '[e]'" &&
+  #     ! ${ssh} ${targetb} "rpm -q ${python36_pkg1} ${python36_pkg2}"
+  #  then
+  #    print_SUCCESS
+  #  else
+  #    print_FAIL
+  #  fi
+  #fi
+
+  pad " · Disabling ${python36_module} on ${targetb}"
+  ${ssh} ${targetb} "yum -y remove ${python36_pkg1} ${python36_pkg2}" &&
+  ${ssh} ${targetb} "yum -y module disable ${python36_module}"
+  if ${ssh} ${targetb} "yum module list | grep python36 | grep '[e]'" &&
+     ! ${ssh} ${targetb} "rpm -q ${python36_pkg1} ${python36_pkg2}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Disabling sshpass on ${target}"
+  if rm -f /etc/yum.repos.d/ansible.repo &&
+     yum -y remove sshpass
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

@@ -1,0 +1,183 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-archive-review - grading script for RH124 Lab
+#                           Controlling Services and Daemons
+#
+# SYNOPSIS
+#     lab-archive-review {start|grade|finish}
+#
+#        start   - prepare the system for starting the lab
+#        grade   - perform evaluation steps on the system
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start, grading,
+#     or finish for the Controlling Services and Daemons Lab.
+#
+# CHANGELOG
+#   * Wed Feb 12 2019 Snehangshu Karmakar <snehk@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='serverb'
+servera='servera'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start grade finish)
+
+tarfile="configfile-backup-servera.tar.gz"
+dirname_serverb="/configsync"
+dirname_work="/tmp/savedconfig"
+
+function lab_start {
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} for lab exercise work:"
+  print_line
+
+  pad " · Verifying server is reachable: ${target}"
+  host_reachable ${target}
+  print_SUCCESS
+
+  pad " · Verifying server is reachable: ${servera}"
+  host_reachable ${servera}
+  print_SUCCESS
+
+  pad " · Ensuring directory/file does not exit: ${target}"
+  if ${ssh} ${target} [[ ! -d ${dirname_serverb} && ! -f /root/${tarfile} ]]; then
+    print_SUCCESS
+  else
+    ${ssh} ${target} "rm -rf ${dirname_serverb} /root/${tarfile}"
+    print_SUCCESS
+  fi
+
+  pad " · Ensuring directory/file does not exit: workstation"
+  if [[ ! -d ${dirname_work} && ! -f /home/student/${tarfile} ]]; then
+    print_SUCCESS
+  else
+    rm -rf ${dirname_work} /home/student/${tarfile}
+    print_SUCCESS
+  fi
+
+  print_line
+}
+
+function lab_grade {
+
+  print_header "Grading the student's work on ${target}:"
+  host_reachable ${target}
+
+  pad " · Verifying ${dirname_serverb} on ${target}"
+  if ${ssh} ${target} [[ -d ${dirname_serverb}/etc ]]; then
+    fcount_servera=$(${ssh} ${servera} "ls -l /etc | wc -l")
+    fcount_serverb=$(${ssh} ${target} "ls -l ${dirname_serverb}/etc | wc -l")
+    if [[ ${fcount_servera} == ${fcount_serverb} ]]; then
+      print_PASS
+    else
+      print_FAIL
+    fi  
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying archive (exists) on ${target}"
+  if ${ssh} ${target} [[ -f /root/${tarfile} ]]; then
+    print_PASS
+    pad " · Verifying the compression used"
+    if ${ssh} ${target} "file /root/${tarfile} | grep 'gzip compressed data'"; then
+      print_PASS
+    else
+      print_FAIL
+    fi
+    pad " · Verifying archive content"
+    if ${ssh} ${target} "tar tzf /root/${tarfile} | grep -q configsync/etc"; then
+      print_PASS
+    else
+      print_FAIL
+    fi
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying archive (exists) on workstation"
+  if [[ -f /home/student/${tarfile} ]]; then
+    print_PASS
+    pad " · Verifying archive (copied)"
+    md5sum_serverb=$(${ssh} ${target} "md5sum /root/${tarfile} | cut -d ' ' -f 1")
+    md5sum_work=$(md5sum /home/student/${tarfile} | cut -d ' ' -f 1)
+    if [[ ${md5sum_serverb} == ${md5sum_work} ]]; then
+      print_PASS
+    else
+      print_FAIL
+    fi
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying ${dirname_work} exists on workstation"
+  if [[ -d ${dirname_work}/configsync ]]; then
+    print_PASS
+    pad " · Verifying archive content"
+    fcount_servera=$(${ssh} ${servera} "ls -l /etc | wc -l")
+    fcount_work=$(ls -l ${dirname_work}/configsync/etc | wc -l)
+    if [[ ${fcount_servera} == ${fcount_work} ]]; then
+      print_PASS
+    else
+      print_FAIL
+    fi
+  else
+    print_FAIL
+  fi
+
+  # Overall grade
+  print_line
+  pad 'Overall lab grade'
+  if [[ ${fail_count} -eq 0 ]]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  print_line
+}
+function lab_finish {
+
+  print_header "You have completed attempting the guided exercise."
+  host_reachable ${target}
+
+  pad " · Deleting directory/file created: ${target}"
+  if ${ssh} ${target} [[ ! -d ${dirname_serverb} && ! -f /root/${tarfile} ]]; then
+    print_SUCCESS
+  else
+    ${ssh} ${target} "rm -rf ${dirname_serverb} /root/${tarfile}"
+    print_SUCCESS
+  fi
+
+  pad " · Deleting directory/file created: workstation"
+  if [[ ! -d ${dirname_work} && ! -f /home/student/${tarfile} ]]; then
+    print_SUCCESS
+  else
+    rm -rf ${dirname_work} /home/student/${tarfile}
+    print_SUCCESS
+  fi
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

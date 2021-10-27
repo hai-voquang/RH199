@@ -1,0 +1,114 @@
+#!/bin/bash
+#
+# Copyright 2020 Red Hat, Inc.
+#
+# NAME
+#     lab-containers-services - grading script for RH134 Managing Containers as
+#                               Services guided exercise
+#
+# SYNOPSIS
+#     lab-containers-services {start|finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start or
+#     finish for the Containers as Services guided exercise
+#
+# CHANGELOG
+#   * Fri Aug 21 2020 Herve Quatremain <hquatrem@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='servera'
+system_user='contsvc'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start finish)
+
+
+function lab_start {
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} for lab exercise work:"
+  print_line
+  host_reachable ${target}
+
+  rhel_containers_check_quay
+
+  rhel_containers_inspect_image admin redhat321 registry.lab.example.com/rhel8/httpd-24:1-105 Digest
+
+  rhel_containers_deploy_client ${target}
+
+  pad " · Deploying the help files on ${target}"
+  ${ssh} ${target} "mkdir -p /tmp/${problem_name}"
+  cat <<EOF | ${ssh} ${target} "cat > /tmp/${problem_name}/start-container.txt"
+#!/bin/bash
+
+mkdir -p ~/webcontent/html
+echo "Hello World" > ~/webcontent/html/index.html
+
+podman login -u admin -p redhat321 registry.lab.example.com
+
+podman run -d --name myweb -p 8080:8080 -v ~/webcontent:/var/www:Z registry.lab.example.com/rhel8/httpd-24:1-105
+
+curl http://localhost:8080/
+
+EOF
+  ${ssh} ${target} "cp /home/student/.config/containers/registries.conf /tmp/${problem_name}"
+  ${ssh} ${target} "chmod -R a+rX /tmp/${problem_name}"
+  print_SUCCESS
+
+  print_line
+}
+
+function lab_finish {
+
+  print_header "Cleaning up the lab on ${target}:"
+  host_reachable ${target}
+
+  if ${ssh} ${target} "id ${system_user}"
+  then
+    ${ssh} ${system_user}@${target} "systemctl --user disable --now container-${container_name}.service"
+  fi
+
+  rhel_containers_rm_containers_user ${target} ${system_user}
+  rhel_containers_undeploy_client ${target}
+
+  pad " · Removing exercise directories on ${target}"
+  ${ssh} ${target} "rm -rf /home/student/.config/systemd /home/student/webcontent ~${system_user}/.config/systemd ~${system_user}/webcontent /tmp/${problem_name}"
+  print_SUCCESS
+
+  pad " · Reloadind systemd configuration on ${target}"
+  ${ssh} student@${target} "systemctl --user daemon-reload"
+  if ${ssh} ${target} "id ${system_user}"
+  then
+    ${ssh} ${system_user}@${target} "systemctl --user daemon-reload"
+  fi
+  print_SUCCESS
+
+  pad " · Disabling lingering services on ${target}"
+  ${ssh} ${target} "loginctl disable-linger student ; loginctl disable-linger ${system_user}"
+  print_SUCCESS
+
+  rhel_del_user ${target} ${system_user}
+  ${ssh} ${target} "rm -rf /home/${system_user}"
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

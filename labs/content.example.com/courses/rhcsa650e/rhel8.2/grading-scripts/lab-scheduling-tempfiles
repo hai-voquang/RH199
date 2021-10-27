@@ -1,0 +1,189 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-scheduling-tempfiles - grading script for RH124 Managing Temporary Files 
+#
+# SYNOPSIS
+#     lab-scheduling-tempfiles {start|finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start
+#     or finish for the Managing Temporary Files Guided Exercise. 
+#
+# CHANGELOG
+#   * Thu Mar 21 2019 Saumik Paul <saumik@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='servera'
+ge_user='student'
+lib_tmp_conf='/usr/lib/tmpfiles.d/tmp.conf'
+etc_tmp_conf='/etc/tmpfiles.d/tmp.conf'
+etc_momentary_conf='/etc/tmpfiles.d/momentary.conf'
+momentary_dir='/run/momentary'
+tmp_conf_bak='/tmp/tmp.conf.orig'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start finish)
+
+
+function lab_start {
+
+  reqd_package='systemd'        # Just an example
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} for lab exercise work:"
+  print_line
+  host_reachable ${target}
+
+
+  # Check for lab prerequisites (perhaps a required package?).
+  if ! ${ssh} ${target} "rpm -q --quiet ${reqd_package}"
+  then
+    pad " · Error - ${reqd_package} is not installed on ${target}"
+    print_FAIL
+  else
+    pad " · Backing up ${lib_tmp_conf} on ${target}"
+    ${ssh} ${target} "cp ${lib_tmp_conf} ${tmp_conf_bak}"
+    if ${ssh} ${target} "test -s ${tmp_conf_bak}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Ensuring ${etc_tmp_conf} does not exist on ${target}"
+    if ! ${ssh} ${target} "test -e ${etc_tmp_conf}"
+    then
+      print_SUCCESS
+    else
+      ${ssh} ${target} "rm -f ${etc_tmp_conf}"
+      if ! ${ssh} ${target} "test -e ${etc_tmp_conf}"
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    fi
+
+    pad " · Ensuring custom config file does not exist on ${target}"
+    if ! ${ssh} ${target} "test -e ${etc_momentary_conf}"
+    then
+      print_SUCCESS
+    else
+      ${ssh} ${target} "rm -f ${etc_momentary_conf}"
+      if ! ${ssh} ${target} "test -e ${etc_momentary_conf}"
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    fi
+
+    pad " · Ensuring ${momentary_dir} does not exist on ${target}"
+    if ! ${ssh} ${target} "test -e ${momentary_dir}"
+    then
+      print_SUCCESS
+    else
+      ${ssh} ${target} "rm -rf ${momentary_dir}"
+      if ! ${ssh} ${target} "test -e ${momentary_dir}"
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    fi
+
+    print_line
+  fi
+}
+
+function lab_finish {
+
+  print_header "Completing the lab on ${target}:"
+  host_reachable ${target}
+
+  pad " · Restoring original ${lib_tmp_conf} on ${target}"
+  if ${ssh} ${target} "test -s ${tmp_conf_bak}"
+  then
+    if ${ssh} ${target} "cp ${tmp_conf_bak} ${lib_tmp_conf}" &&
+       ${ssh} ${target} "rm -f ${tmp_conf_bak}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  else
+    ${ssh} ${target} "rm -f ${tmp_conf_bak}"
+    if ! ${ssh} ${target} "test -e ${tmp_conf_bak}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  pad " · Deleting ${etc_tmp_conf} from ${target}"
+  if ! ${ssh} ${target} "test -e ${etc_tmp_conf}"
+  then
+    print_SUCCESS
+  else
+    ${ssh} ${target} "rm -f ${etc_tmp_conf}"
+    if ! ${ssh} ${target} "test -e ${etc_tmp_conf}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  pad " · Deleting custom config file from ${target}"
+  if ! ${ssh} ${target} "test -e ${etc_momentary_conf}"
+  then
+    print_SUCCESS
+  else
+    ${ssh} ${target} "rm -f ${etc_momentary_conf}"
+    if ! ${ssh} ${target} "test -e ${etc_momentary_conf}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  pad " · Deleting ${momentary_dir} from ${target}"
+  if ! ${ssh} ${target} "test -e ${momentary_dir}"
+  then
+    print_SUCCESS
+  else
+    ${ssh} ${target} "rm -rf ${momentary_dir}"
+    if ! ${ssh} ${target} "test -e ${momentary_dir}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

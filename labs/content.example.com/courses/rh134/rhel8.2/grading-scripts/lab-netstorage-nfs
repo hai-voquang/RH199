@@ -1,0 +1,267 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-netstorage-autofs - Grading script for RH134 NetStorage NFS Guided Exercise.
+#
+# SYNOPSIS
+#     lab-netstorage-nfs {start|finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start or
+#     finish for the RH134 NetStorage NFS Guided Exercise.
+#
+#     It creates a group called "admin" (gid=1400) on both servera
+#     and serverb. It also creates two users on both machines, admin1
+#     (uid=1401) and sysmanager1 (uid=1402), each with a password of
+#     "redhat". On serverb, it creates a read-write NFS share to the
+#     /shares/public directory.
+#
+# CHANGELOG
+#   * Fri May 03 2019 George Hacker <ghacker@redhat.com>
+#   - use library functions and implement test-and-set logic
+#   * Wed Apr 08 2019 Adrian Andrade <aandrade@redhat.com>
+#   - original code
+#   * Fri Sep 18 2020 Ed Parenti <eparenti@redhat.com>
+#   - Fix per RH134-305. Removed all references servera (nfs client) nfsconf/nfs.conf
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+work='workstation'
+target1='servera'
+target2='serverb'
+reqd_package='vim-enhanced nfs-utils'
+nfs_share='/shares/public'
+nfs_group='admin'
+nfs_user1='admin1'
+nfs_user2='sysmanager1'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start finish)
+
+function lab_start {
+
+  print_header "Preparing ${target1} and ${target2} for lab exercise work"
+
+  pad " · Verifying that ${target1} is running "
+  if host_reachable ${target1}
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+    exit
+  fi
+
+  pad " · Verifying that ${target2} is running "
+  if host_reachable ${target2}
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+    exit
+  fi
+
+  pad " · Preparing ${target1} for required packages "
+  ${ssh} ${target1} "yum install -y ${reqd_package}"
+  print_SUCCESS
+
+  pad " · Preparing ${target2} for required packages "
+  ${ssh} ${target2} "yum install -y ${reqd_package}"
+  print_SUCCESS
+
+  # on both servera and serverb
+  for host in ${target1} ${target2}
+  do
+    # create admin group (gid=1400)
+    rhel_add_group ${host} ${nfs_group} '-g 1400'
+
+    # create admin1,sysmanager1 users with "redhat" password
+    # uid=1401,1402 (both also belong to "admin" group)
+    rhel_add_user ${host} ${nfs_user1} redhat "-u 1401 -G ${nfs_group}"
+    rhel_add_user ${host} ${nfs_user2} redhat "-u 1402 -G ${nfs_group}"
+  done
+
+  # create /shares/public on serverb and populate it with files
+  if ${ssh} ${target2} "[[ ! -d ${nfs_share} ]]"
+  then
+    pad " · Creating required directories in ${target2} "
+    ${ssh} ${target2} "mkdir -p ${nfs_share}"
+    print_SUCCESS
+
+    pad " · Configuring file permissions in ${target2} "
+    ${ssh} ${target2} "chmod 775 /shares"
+    ${ssh} ${target2} "chmod 2770 ${nfs_share}"
+    print_SUCCESS
+
+    pad " · Configuring group ownership on folders in ${target2} "
+    ${ssh} ${target2} "chgrp -R ${nfs_group} ${nfs_share}"
+    print_SUCCESS
+
+    pad " · Creating required files in ${target2} "
+    ${ssh} ${target2}  "cat > ${nfs_share}/README.txt" << EOF
+###Public Folder###
+EOF
+
+    ${ssh} ${target2}  "cat > ${nfs_share}/NOTES.txt" << EOF
+###In this file you can log all your notes###
+EOF
+
+    ${ssh} ${target2}  "cat > ${nfs_share}/Trackings.txt" << EOF
+###Tracking Status File###
+EOF
+
+    ${ssh} ${target2}  "cat > ${nfs_share}/Delivered.txt" << EOF
+###List of Shippings Already Delivered###
+EOF
+    print_SUCCESS
+
+    pad " · Configuring SELinux Contexts in ${target2} "
+    ${ssh} ${target2} "semanage fcontext -a -t public_content_rw_t '/shares(/.*)?'"
+    ${ssh} ${target2} "restorecon -vvFR /shares/"
+    print_SUCCESS
+  fi
+
+  # NFS export serverb:/shares/public (rw)
+  if ${ssh} ${target2} "[[ ! -f /etc/nfs.conf-orig ]]"
+  then
+    pad " · Making /etc/nfs.conf backup in ${target2} "
+    ${ssh} ${target2} "cp /etc/nfs.conf{,-orig}"
+    print_SUCCESS
+
+    pad " · Configuring NFSv4 Server in ${target2} "
+    ${ssh} ${target2} "nfsconf --set nfsd udp n"
+    ${ssh} ${target2} "nfsconf --set nfsd tcp y"
+    ${ssh} ${target2} "nfsconf --set nfsd vers2 n"
+    ${ssh} ${target2} "nfsconf --set nfsd vers3 n"
+    ${ssh} ${target2} "nfsconf --set nfsd vers4  y"
+    ${ssh} ${target2} "nfsconf --set nfsd vers4.0 y"
+    ${ssh} ${target2} "nfsconf --set nfsd vers4.1 y"
+    ${ssh} ${target2} "nfsconf --set nfsd vers4.2 y"
+    ${ssh} ${target2} "echo '${nfs_share} *(rw,no_root_squash)' > /etc/exports.d/public.exports"
+    ${ssh} ${target2} "systemctl unmask --now rpc-statd.service rpcbind.service rpcbind.socket"
+    ${ssh} ${target2} "systemctl enable --now nfs-server"
+    print_SUCCESS
+
+    pad " · Configuring Firewall in ${target2} "
+    ${ssh} ${target2} "firewall-cmd --add-service=nfs"
+    ${ssh} ${target2} "firewall-cmd --runtime-to-permanent"
+    print_SUCCESS
+  fi
+
+  if ${ssh} ${target1} "[[ ! -f /etc/fstab-orig ]]"
+  then
+    pad " · Making /etc/fstab backup in ${target1} "
+    ${ssh} ${target1} "cp /etc/fstab{,-orig}"
+    print_SUCCESS
+  fi
+
+  print_line
+
+}
+
+function lab_finish {
+
+  print_header "Completing the lab in ${target1} and ${target2}:"
+
+  # Need to remove ${target1}'s fstab reference before cleaning
+  # up ${target2}.
+  if ${ssh} ${target1} "[[ -f /etc/fstab-orig ]]"
+  then
+    pad " · Restoring /etc/fstab in ${target1}:"
+    ${ssh} ${target1} "cat /etc/fstab-orig > /etc/fstab"
+    ${ssh} ${target1} "rm -rf /etc/fstab-orig"
+    print_SUCCESS
+
+    pad " · Rebooting ${target1}:"
+    ${ssh} ${target1} "reboot"
+    print_SUCCESS
+  fi
+
+  if ${ssh} ${target2} "[[ -f /etc/nfs.conf-orig ]]"
+  then
+    pad " · Clearing NFSv4 Server configuration in ${target2} "
+    ${ssh} ${target2} "systemctl disable --now nfs-server"
+    ${ssh} ${target2} "systemctl unmask --now rpc-statd.service rpcbind.service rpcbind.socket"
+    ${ssh} ${target2} "cat /etc/nfs.conf-orig > /etc/nfs.conf"
+    ${ssh} ${target2} "rm -rf /etc/nfs.conf-orig"
+    ${ssh} ${target2} "rm -rf /etc/exports.d/*"
+    print_SUCCESS
+
+    pad " · Removing shared directories and files in ${target2} "
+    ${ssh} ${target2} "fuser /shares"
+    ${ssh} ${target2} "fuser /shares -k"
+    ${ssh} ${target2} "rm -rf /shares"
+    print_SUCCESS
+
+    pad " · Restoring SELinux configuration in ${target2} "
+    ${ssh} ${target2} "semanage fcontext -d -t public_content_rw_t '/shares(/.*)?'"
+    print_SUCCESS
+
+    pad " · Restoring firewall in ${target2} "
+    ${ssh} ${target2} "firewall-cmd --remove-service=nfs"
+    ${ssh} ${target2} "firewall-cmd --runtime-to-permanent"
+    print_SUCCESS
+  fi
+
+  rhel_del_user ${target2} ${nfs_user1}
+  rhel_del_user ${target2} ${nfs_user2}
+  rhel_del_group ${target2} ${nfs_group}
+
+  pad " · Waiting for ${target1} to become available "
+  if ssh -q -o "ConnectTimeout=5s" ${target1} "hostname"
+  then
+    print_SUCCESS
+  else
+    sleep 60
+    if ssh -q -o "ConnectTimeout=5s" ${target1} "hostname"
+    then
+      print_SUCCESS
+    else
+      sleep 60
+      if ssh -q -o "ConnectTimeout=5s" ${target1} "hostname"
+      then
+        print_SUCCESS
+      else
+        sleep 60
+        if ssh -q -o "ConnectTimeout=5s" ${target1} "hostname"
+        then
+          print_SUCCESS
+        else
+          sleep 60
+          if ssh -q -o "ConnectTimeout=5s" ${target1} "hostname"
+          then
+            print_SUCCESS
+          else
+            print_FAIL
+          fi
+        fi
+      fi
+    fi
+  fi
+
+  pad " · Removing directories in ${target1} "
+  ${ssh} ${target1} "rm -rf /public"
+  print_SUCCESS
+
+  rhel_del_user ${target1} ${nfs_user1}
+  rhel_del_user ${target1} ${nfs_user2}
+  rhel_del_group ${target1} ${nfs_group}
+
+  print_header 'Lab finished.'
+
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

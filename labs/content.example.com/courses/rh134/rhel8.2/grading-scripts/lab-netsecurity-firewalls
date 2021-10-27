@@ -1,0 +1,113 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-netsecurity-firewalls - grading script for RH134 Guided Exercise
+#                                 Managing Server Firewalls
+#
+# SYNOPSIS
+#     lab-netsecurity-firewalls {start|finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start or
+#     finish for the Managing Server Firewalls guided exercise.
+#
+# CHANGELOG
+#   * Thu Apr 04 2019 Victor Costea <vcostea@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='servera'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start finish)
+
+
+function lab_start {
+
+  cpit_soc='cockpit.socket'
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} for lab exercise work:"
+  print_line
+
+  pad " · Check ${target} connectivity"
+  host_reachable ${target}
+  print_SUCCESS
+
+  pad " · Enable and start ${cpit_soc} on ${target}"
+  svc_state="systemctl is-enabled ${cpit_soc} || systemctl is-active ${cpit_soc}"
+  enable_cpit="systemctl enable --now ${cpit_soc}"
+  if ! ${ssh} ${target} ${svc_state}
+  then
+    ${ssh} ${target} ${enable_cpit}
+    print_SUCCESS
+  elif ${ssh} ${target} ${svc_state}
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  print_line
+}
+
+function lab_finish {
+
+  http_pkg='httpd'
+  https_svc='https'
+  net_zone='public'
+
+  print_header "Cleaning up the lab on ${target}:"
+  host_reachable ${target}
+
+  pad " · Remove ${http_pkg} from ${target}"
+  if ${ssh} ${target} "rpm -q --quiet ${http_pkg}"
+  then
+    ${ssh} ${target} "yum remove -y ${http_pkg}"
+    ${ssh} ${target} "rm -rf /var/www"
+    print_SUCCESS
+  elif ! ${ssh} ${target} "rpm -q --quiet ${http_pkg}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+
+  pad " · Reset firewall to defaults"
+  get_svc='firewall-cmd --zone=public --list-services | grep "https"'
+  rm_svc="firewall-cmd --zone=public --permanent --remove-service=https"
+  if ${ssh} ${target} "${get_svc}"
+  then
+    ${ssh} ${target} "${rm_svc}"
+    ${ssh} ${target} "firewall-cmd --reload"
+    print_SUCCESS
+  elif ! ${ssh} ${target} "${get_svc}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

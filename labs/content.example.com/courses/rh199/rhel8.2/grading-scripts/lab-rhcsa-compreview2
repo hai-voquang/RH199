@@ -1,0 +1,400 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-rhcsa-compreview2 - grading script for RHCSA Comprehensive
+#                             Review 2
+#
+# SYNOPSIS
+#     lab-rhcsa-compreview1 {start|grade|finish}
+#
+#        start   - prepare the system for starting the lab
+#        grade   - perform evaluation steps on the system
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start, grading,
+#     or finish for the RHCSA Comprehesive Review I.
+#
+# CHANGELOG
+#   * Mon May 27 2019 Saumik Paul <saumik@redhat.com>
+#   - Modified grade logic to allow students choose arbitrary tmpfiles.d config file
+#   * Wed Apr 05 2019 Saumik Paul <saumik@redhat.com>
+#   - original code
+
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+targeta='servera'
+targetb='serverb'
+comp_review2_user1='production1'
+comp_review2_user2='production2'
+comp_review2_user3='production3'
+comp_review2_user4='production4'
+comp_review2_group='production'
+comp_review2_disk1='/dev/vdb'
+comp_review2_disk2='/dev/vdc'
+comp_review2_lv='/dev/extra_storage/vol_home'
+comp_review2_vg='extra_storage'
+#comp_review2_pv='/dev/vdb1'
+comp_review2_lv_mount='/home-directories'
+comp_review2_swap='/dev/vdc1'
+comp_review2_volatile_dir='/run/volatile'
+comp_review2_volatile='/run/volatile/file1'
+comp_review2_volatile_conf='/etc/tmpfiles.d/volatile.conf'
+comp_review2_web_content='/webcontent'
+comp_review2_share='/share'
+comp_review2_share_tab='/var/lib/nfs/etab'
+comp_review2_share_mount='/local-share'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start grade finish)
+
+# Need a course variable from /etc/rht, which is only variables
+# Source the whole file to load all variables
+source /etc/rht
+
+function lab_start {
+
+  reqd_package='lvm2 acl nfs-utils'        # Just an example
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${targeta} and ${targetb} for lab exercise work:"
+  print_line
+  host_reachable ${targetb}
+
+
+  # Check for lab prerequisites (perhaps a required package?).
+  if ! ${ssh} ${targetb} "rpm -q --quiet ${reqd_package}"
+  then
+    pad " · Error - ${reqd_package} is not installed on ${target}"
+    print_FAIL
+  else
+    pad " · Backing up original /etc/fstab on ${targetb}"
+    ${ssh} ${targetb} "cp /etc/fstab /tmp/fstab.orig"
+    if ${ssh} ${targetb} "test -f /tmp/fstab.orig" &&
+       ${ssh} ${targetb} "test -s /tmp/fstab.orig"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Ensuring no LVM resources on ${targetb}"
+    comp_review2_pv=$(${ssh} ${targetb} "pvs" | sed '1d' | awk '{ print $1 }' | tr "\n" "\t" | paste -sd '\0')
+    ${ssh} ${targetb} "sed -i '/\/home-directories/d' /etc/fstab"
+    ${ssh} ${targetb} "umount ${comp_review2_lv_mount}"
+    ${ssh} ${targetb} "vgremove -ff -y ${comp_review2_vg}"
+    ${ssh} ${targetb} "pvremove -ff -y ${comp_review2_pv}"
+    pv_number=$(${ssh} ${targetb} "pvs" | sed '1d' | wc -l)
+    if ! ${ssh} ${targetb} "lvdisplay {comp_review2_lv}" &&
+       ! ${ssh} ${targetb} "vgdisplay {comp_review2_vg}" &&
+       [ "${pv_number}" -eq 0 ]
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Exporting ${comp_review2_share} from ${targeta}"
+    ${ssh} ${targeta} "systemctl enable --now nfs-server.service"
+    ${ssh} ${targeta} "firewall-cmd --permanent --add-service=nfs; firewall-cmd --permanent --add-service=rpc-bind; firewall-cmd --permanent --add-service=mountd; firewall-cmd --reload"
+    ${ssh} ${targeta} "mkdir -m 777 ${comp_review2_share}"
+    ${ssh} ${targeta} "echo '/share serverb.lab.example.com(rw,sync)' > /etc/exports.d/share.exports; exportfs -rv"
+    if ${ssh} ${targeta} "grep ${comp_review2_share} ${comp_review2_share_tab} | grep ${targetb}.lab.example.com" | grep 'rw,sync'
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Ensuring no swap space on ${targetb}"
+    ${ssh} ${targetb} "sed -i '/\/swap/d' /etc/fstab"
+    ${ssh} ${targetb} "swapoff ${comp_review2_swap}"
+    swap_device=$(${ssh} ${targetb} "swapon -s" | grep ${comp_review2_swap} | wc -l)
+    if [ "${swap_device}" -eq 0 ]
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Ensuring no ${comp_review2_group} group on ${targetb}"
+    ${ssh} ${targetb} "groupdel ${comp_review2_group}"
+    if ! ${ssh} ${targetb} "getent group ${comp_review2_group}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Ensuring no ${comp_review2_group} group members on ${targetb}"
+    ${ssh} ${targetb} "userdel -r ${comp_review2_user1}; userdel -r ${comp_review2_user2}; userdel -r ${comp_review2_user3}; userdel -r ${comp_review2_user4}"
+    if ! ${ssh} ${targetb} "getent passwd ${comp_review2_user1}" &&
+       ! ${ssh} ${targetb} "getent passwd ${comp_review2_user2}" &&
+       ! ${ssh} ${targetb} "getent passwd ${comp_review2_user3}" &&
+       ! ${ssh} ${targetb} "getent passwd ${comp_review2_user4}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Ensuring no tempfiles.d configuration on ${targetb}"
+    ${ssh} ${targetb} "rm -rf ${comp_review2_volatile_dir} ${comp_review2_volatile_conf}"
+    if ! ${ssh} ${targetb} "test -d ${comp_review2_volatile}" &&
+       ! ${ssh} ${targetb} "test -f ${comp_review2_volatile_conf}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Ensuring no ${comp_review2_web_content} on ${targetb}"
+    ${ssh} ${targetb} "rm -rf ${comp_review2_web_content}"
+    if ! ${ssh} ${targetb} "test -d ${comp_review2_web_content}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+  fi
+
+  print_line
+}
+
+function lab_grade {
+
+  print_header "Grading the student's work on ${targetb}:"
+  host_reachable ${targetb}
+
+  # Put in the steps to grade the lab (use print_PASS or print_FAIL)
+  pad " · Verifying the LVM logical volume on ${targetb}"
+  lv_verify=$(${ssh} ${targetb} "lvdisplay ${comp_review2_lv}" | grep '1.00 GiB' | wc -l)
+  if [ "${lv_verify}" -eq 1 ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying the LVM file system on ${targetb}"
+  ${ssh} ${targetb} "umount ${comp_review2_lv_mount}"
+  ${ssh} ${targetb} "mount -a"
+  lv_fs_verify=$(${ssh} ${targetb} "mount" | grep ${comp_review2_lv_mount} | wc -l)
+  if [ "${lv_fs_verify}" -eq 1 ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying the network file system on ${targetb}"
+  if ${ssh} ${targetb} "grep ${comp_review2_share_mount} /etc/fstab"
+  then
+    ${ssh} ${targetb} "umount /local-share"
+    ${ssh} ${targetb} "mount -a"
+    nfs_verify=$(${ssh} ${targetb} "mount" | grep ${comp_review2_share_mount} | grep ${targeta}.lab.example.com:${comp_review2_share}| wc -l)
+    if [ "${nfs_verify}" -eq 1 ]
+    then
+      print_PASS
+    else
+      print_FAIL
+    fi
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying the swap file system on ${targetb}"
+  ${ssh} ${targetb} "swapoff ${comp_review2_swap}"
+  ${ssh} ${targetb} "swapon -a"
+  swap_fs_verify=$(${ssh} ${targetb} "swapon -s" | grep ${comp_review2_swap} | wc -l)
+  if [ "${swap_fs_verify}" -eq 1 ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying ${comp_review2_group} group on ${targetb}"
+  production1_verify=$(${ssh} ${targetb} "groups ${comp_review2_user1}" | awk '{ print $4 }')
+  production2_verify=$(${ssh} ${targetb} "groups ${comp_review2_user2}" | awk '{ print $4 }')
+  production3_verify=$(${ssh} ${targetb} "groups ${comp_review2_user3}" | awk '{ print $4 }')
+  production4_verify=$(${ssh} ${targetb} "groups ${comp_review2_user4}" | awk '{ print $4 }')
+  if [ "${production1_verify}" == "production" ] &&
+     [ "${production2_verify}" == "production" ] &&
+     [ "${production3_verify}" == "production" ] &&
+     [ "${production4_verify}" == "production" ] &&
+     ${ssh} ${targetb} "getent group ${comp_review2_group}"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying tmpfiles config on ${targetb}"
+  num_tmpfiles=$(for i in $(${ssh} ${targetb} "ls /etc/tmpfiles.d/*"); do echo $i; done | wc -l)
+  if [ "${num_tmpfiles}" -ne 0 ]
+  then
+    for i in $(${ssh} ${targetb} "ls /etc/tmpfiles.d/*"); do systemd-tmpfiles --create --clean $i; done &&
+    ${ssh} ${targetb} "touch ${comp_review2_volatile}; sleep 30s" &&
+    for i in $(${ssh} ${targetb} "ls /etc/tmpfiles.d/*"); do systemd-tmpfiles --clean $i; done
+    if ! ${ssh} ${targetb} "test -s ${comp_review2_volatile}" &&
+         ${ssh} ${targetb} "test -d ${comp_review2_volatile_dir}"
+    then
+      print_PASS
+    else
+      print_FAIL
+    fi
+  else
+    print_FAIL
+  fi
+
+
+  if [[ "${RHT_COURSE}" != "rh199" ]]
+  # no acl content in RH199 Rapid Track, so do only if not rh199
+  then
+    pad " · Verifying ACLs ${comp_review2_web_content} on ${targetb}"
+    production1_acl_verify=$(${ssh} ${targetb} "getfacl /webcontent" | grep user:production1 | grep -v default | wc -l)
+    production_acl_verify=$(${ssh} ${targetb} "getfacl /webcontent" | grep group:production | grep -v default | wc -l)
+    production1_default_acl_verify=$(${ssh} ${targetb} "getfacl /webcontent" | grep user:production1 | grep ^default | wc -l)
+    production_default_acl_verify=$(${ssh} ${targetb} "getfacl /webcontent" | grep group:production | grep ^default | wc -l)
+    if [ "${production1_acl_verify}" -eq 1 ] &&
+       [ "${production_acl_verify}" -eq 1 ] &&
+       [ "${production1_default_acl_verify}" -eq 1 ] &&
+       [ "${production_default_acl_verify}" -eq 1 ]
+    then
+      print_PASS
+    else
+      print_FAIL
+    fi
+  fi
+
+  # Overall grade
+  print_line
+  pad 'Overall lab grade'
+  if [[ ${fail_count} -eq 0 ]]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  print_line
+}
+
+function lab_finish {
+
+  print_header "Cleaning up the lab on ${targetb}:"
+  host_reachable ${targetb}
+
+  pad " · Restoring original /etc/fstab on ${targetb}"
+  ${ssh} ${targetb} "cp /tmp/fstab.orig /etc/fstab"
+  ${ssh} ${targetb} "rm -f /tmp/fstab.orig"
+  if ! ${ssh} ${targetb} "grep -e ${comp_review2_lv_mount} -e swap -e ${comp_review2_share_mount} /etc/fstab"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Removing LVM resources from ${targetb}"
+  comp_review2_pv=$(${ssh} ${targetb} "pvs" | sed '1d' | awk '{ print $1 }' | tr "\n" "\t" | paste -sd '\0')
+  ${ssh} ${targetb} "sed -i '/\/home-directories/d' /etc/fstab"
+  ${ssh} ${targetb} "umount ${comp_review2_lv_mount}"
+  ${ssh} ${targetb} "vgremove -ff -y ${comp_review2_vg}"
+  ${ssh} ${targetb} "pvremove -ff -y ${comp_review2_pv}"
+  pv_number=$(${ssh} ${targetb} "pvs" | sed '1d' | wc -l)
+  if ! ${ssh} ${targetb} "lvdisplay ${comp_review2_lv}" &&
+     ! ${ssh} ${targetb} "vgdisplay ${comp_review2_vg}" &&
+     [ "${pv_number}" -eq 0 ]
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Removing NFS share from ${targeta}"
+  ${ssh} ${targeta} "systemctl disable --now nfs-server.service"
+  ${ssh} ${targeta} "firewall-cmd --permanent --remove-service=nfs; firewall-cmd --permanent --remove-service=rpc-bind; firewall-cmd --permanent --remove-service=mountd; firewall-cmd --reload"
+  ${ssh} ${targeta} "rm -rf ${comp_review2_share}"
+  ${ssh} ${targeta} "rm -rf /etc/exports.d/share.exports; exportfs -rv"
+  if ! ${ssh} ${targeta} "grep ${comp_review2_share} ${comp_review2_share_tab} | grep ${targetb}.lab.example.com" | grep 'rw,sync'
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Removing swap partition from ${targetb}"
+  ${ssh} ${targetb} "sed -i '/\/swap/d' /etc/fstab"
+  ${ssh} ${targetb} "swapoff ${comp_review2_swap}"
+  swap_device=$(${ssh} ${targetb} "swapon -s" | grep ${comp_review2_swap} | wc -l)
+  if [ "${swap_device}" -eq 0 ]
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Removing ${comp_review2_group} group from ${targetb}"
+  ${ssh} ${targetb} "groupdel ${comp_review2_group}"
+  if ! ${ssh} ${targetb} "getent group ${comp_review2_group}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Removing ${comp_review2_group} group members from ${targetb}"
+  ${ssh} ${targetb} "userdel -r ${comp_review2_user1}; userdel -r ${comp_review2_user2}; userdel -r ${comp_review2_user3}; userdel -r ${comp_review2_user4}"
+  if ! ${ssh} ${targetb} "getent passwd ${comp_review2_user1}" &&
+     ! ${ssh} ${targetb} "getent passwd ${comp_review2_user2}" &&
+     ! ${ssh} ${targetb} "getent passwd ${comp_review2_user3}" &&
+     ! ${ssh} ${targetb} "getent passwd ${comp_review2_user4}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Removing tempfiles.d configuration from ${targetb}"
+  ${ssh} ${targetb} "rm -rf ${comp_review2_volatile_dir} ${comp_review2_volatile_conf}"
+  if ! ${ssh} ${targetb} "test -d ${comp_review2_volatile_dir}" &&
+     ! ${ssh} ${targetb} "test -f ${comp_review2_volatile_conf}" &&
+     ! ${ssh} ${targetb} "test -f ${comp_review2_volatile}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Removing ${comp_review2_web_content} from ${targetb}"
+  ${ssh} ${targetb} "rm -rf ${comp_review2_web_content}"
+  if ! ${ssh} ${targetb} "test -d ${comp_review2_web_content}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  print_line "You have completed attempting the comprehensive review."
+  print_line "Reset workstation, servera, and serverb."
+
+  print_line 'Comprehensive review finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

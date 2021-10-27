@@ -1,0 +1,139 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-scheduling-system - grading script for RH124 Scheduling Recurring System Jobs 
+#
+# SYNOPSIS
+#     lab-scheduling-cron {start|finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start
+#     or finish for the Scheduling Recurring System Jobs Guided Exercise 
+#
+# CHANGELOG
+#   * Mon Mar 25 2019 Saumik Paul <saumik@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='servera'
+ge_user='student'
+ge_script='/etc/cron.daily/usercount'
+ge_pkg='sysstat'
+ge_timer='/usr/lib/systemd/system/sysstat-collect.timer'
+ge_service='/usr/lib/systemd/system/sysstat-collect.service'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start finish)
+
+
+function lab_start {
+
+  reqd_package='systemd'        # Just an example
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} for lab exercise work:"
+  print_line
+  host_reachable ${target}
+
+
+  # Check for lab prerequisites (perhaps a required package?).
+  if ! ${ssh} ${target} "rpm -q --quiet ${reqd_package}"
+  then
+    pad " · Error - ${reqd_package} is not installed on ${target}"
+    print_FAIL
+  else
+    pad " · Ensuring ${ge_script} does not exist on ${target}"
+    if ! ${ssh} ${target} "test -e ${ge_script}"
+    then
+      print_SUCCESS
+    else
+      if ${ssh} ${target} "rm -rf ${ge_script}" &&
+	 ! ${ssh} ${target} "test -e ${ge_script}"
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    fi
+
+    pad " · Ensuring ${ge_pkg} is not installed on ${target}"
+    if ! ${ssh} ${target} "rpm -q ${ge_pkg}" &&
+       ! ${ssh} ${target} "test -e ${ge_timer}" &&
+       ! ${ssh} ${target} "test -e ${ge_service}"
+    then
+      print_SUCCESS
+    else
+      if ${ssh} ${target} "yum -y remove ${ge_pkg}" &&
+         ${ssh} ${target} "rm -f ${ge_timer} ${ge_service}" &&
+         ! ${ssh} ${target} "test -e ${ge_timer}" &&
+         ! ${ssh} ${target} "test -e ${ge_service}"
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    fi
+
+    print_line
+  fi
+}
+
+function lab_finish {
+
+  print_header "Completing the lab on ${target}:"
+  host_reachable ${target}
+
+  pad " · Removing ${ge_script} from ${target}"
+  if ! ${ssh} ${target} "test -e ${ge_script}"
+  then
+    print_SUCCESS
+  else
+    if ${ssh} ${target} "rm -rf ${ge_script}" &&
+       ! ${ssh} ${target} "test -e ${ge_script}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  pad " · Uninstalling ${ge_pkg} from ${target}"
+  if ! ${ssh} ${target} "rpm -q ${ge_pkg}" &&
+     ! ${ssh} ${target} "test -e ${ge_timer}" &&
+     ! ${ssh} ${target} "test -e ${ge_service}"
+  then
+    print_SUCCESS
+  else
+    if ${ssh} ${target} "yum -y remove ${ge_pkg}" &&
+       ${ssh} ${target} "rm -f ${ge_timer} ${ge_service}" &&
+       ! ${ssh} ${target} "test -e ${ge_timer}" &&
+       ! ${ssh} ${target} "test -e ${ge_service}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

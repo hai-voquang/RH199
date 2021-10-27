@@ -1,0 +1,185 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-netsecurity-ports - grading script for RH134 Guided Exercise
+#                                 Controlling SELinux Port Labelling
+#
+# SYNOPSIS
+#     lab-netsecurity-ports {start|finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start or
+#     finish for the Managing Server Firewalls guided exercise.
+#
+# CHANGELOG
+#   * Mon Apr 08 2019 Fiona Allen <fallen@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='servera'
+directory='/etc/httpd'
+file='/var/www/html/index.html'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start finish)
+reqd_package='httpd'
+
+
+function lab_start {
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing workstation for lab exercise work:"
+
+  pad " · Verifying that ${target} is running: "
+  if host_reachable ${target}
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  # Check that required package(s) is/are installed.
+  pad " · Ensuring package is installed: ${reqd_package}"
+  if  ${ssh} ${target} "rpm -q --quiet ${reqd_package}"
+  then
+    print_SUCCESS
+    elif  ${ssh} ${target} "yum -y install ${reqd_package}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+  fi
+
+  # Setting firewall rules
+  pad " · Setting firewall rules: "
+  if ${ssh} ${target} "firewall-cmd --zone=public --add-service=http --permanent"
+  then
+    if ${ssh} ${target} "firewall-cmd --reload"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  # Setting listening port
+  pad " · Set HTTP listening port: "
+  if ${ssh} ${target} "sed -i '/^Listen/s/^.*$/Listen 82/' /etc/httpd/conf/httpd.conf &>/dev/null"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Setting the index.html file: "
+  if ${ssh} ${target} 'cat > /var/www/html/index.html' << EOF
+Hello
+EOF
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  print_line
+
+}
+
+function lab_finish {
+
+
+  print_header "Cleaning up the lab on ${target}:"
+  host_reachable ${target}
+
+  pad " · Cleaning up firewall rules: "
+  if ${ssh} ${target} "firewall-cmd --zone=public --remove-service=http --permanent"
+  then
+    if ${ssh} ${target} "firewall-cmd --reload"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+  
+  pad " · Removing  ${reqd_package}: "
+  if ! ${ssh} ${target} "rpm -q --quiet ${reqd_package}"
+  then
+    print_SUCCESS
+    elif
+      ${ssh} ${target} "yum -y remove ${reqd_package}"
+      then
+        print_SUCCESS
+      else
+        print_FAIL
+   fi
+
+  pad " · Removing the ${directory}: "
+  if ! ${ssh} ${target} " [ -d ${directory} ] "
+  then
+    print_SUCCESS
+    elif
+      ${ssh} ${target} "rm -rf ${directory}"
+      then
+        print_SUCCESS
+      else
+        print_FAIL
+  fi
+
+  pad " · Removing the ${file}: "
+  if ! ${ssh} ${target} " [ -f ${file} ] "
+  then
+    print_SUCCESS
+    elif
+      ${ssh} ${target} "rm -f ${file}"
+      then
+        print_SUCCESS
+      else
+        print_FAIL
+  fi
+
+  pad " · Removing firewall rules: "
+  if ${ssh} ${target} 'firewall-cmd --permanent --remove-port=82/tcp'
+  then
+    if ${ssh} ${target} 'firewall-cmd --reload'
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  pad " · Removing port 82 from PORT_TYPE: "
+  if ${ssh} ${target} 'semanage port -d -t PORT_TYPE -p tcp 82'
+  then
+    print_SUCCESS
+  elif ! ${ssh} ${target} 'semanage port -d -t PORT_TYPE -p tcp 82'
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

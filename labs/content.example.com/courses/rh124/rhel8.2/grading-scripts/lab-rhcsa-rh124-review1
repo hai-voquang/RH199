@@ -1,0 +1,272 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-rhcsa-rh124-review1 - grading script for RH124 Comprehensive Review Managing Files from the Command Line
+#
+# SYNOPSIS
+#     lab-rhcsa-rh124-review1 {start|grade|finish}
+#
+#        start   - prepare the system for starting the lab
+#	 grade   - perform evaluation steps on the system 
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start
+#     or finish for the Comprehensive Review Managing Files from the Command
+#     Line.
+#
+# CHANGELOG
+#   * Tue Mar 05 2019 Saumik Paul <saumik@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+#targeta='servera'
+targetb='serverb'
+comp_review1_user='student'
+comp_review1_group='student'
+comp_review1_home='/home/student'
+comp_review1_boot='/boot'
+comp_review1_bin="${comp_review1_home}/bin"
+comp_review1_manage_files="${comp_review1_bin}/manage-files"
+comp_review1_grading="${comp_review1_home}/grading"
+comp_review1_hardlink="${comp_review1_home}/hardlink"
+comp_review1_softlink="${comp_review1_home}/softlink"
+comp_review1_manage_files_txt="${comp_review1_grading}/manage-files.txt"
+comp_review1_manage_files_copy_txt="${comp_review1_grading}/manage-files-copy.txt"
+comp_review1_long_listing_txt="${comp_review1_grading}/longlisting.txt"
+comp_review1_colors_txt="${comp_review1_grading}/colors.txt"
+comp_review1_grade1="${comp_review1_grading}/grade1"
+comp_review1_grade2="${comp_review1_grading}/grade2"
+comp_review1_grade3="${comp_review1_grading}/grade3"
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start grade finish)
+
+
+function lab_start {
+
+  reqd_package='coreutils'        # Just an example
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${targetb} for lab exercise work:"
+  print_line
+  host_reachable ${targetb}
+
+
+  # Check for lab prerequisites (perhaps a required package?).
+  if ! ${ssh} ${targetb} "rpm -q --quiet ${reqd_package}"
+  then
+    pad " · Error - ${reqd_package} is not installed on ${targetb}"
+    print_FAIL
+  else
+    pad " · Creating ${comp_review1_manage_files} on ${targetb}"
+    ${ssh} ${targetb} "mkdir ${comp_review1_bin}"
+    ${ssh} ${targetb} "cat > ${comp_review1_manage_files} << EOF
+Test AA
+Test BB
+Test CC
+Test DD
+Test EE
+Test FF
+Test GG
+Test HH
+Test II
+Test JJ
+EOF"
+    ${ssh} ${targetb} "chown -R ${comp_review1_user}:${comp_review1_group}  ${comp_review1_bin}"
+    if ${ssh} ${targetb} "test -s ${comp_review1_manage_files}" &&
+       ${ssh} ${targetb} "md5sum ${comp_review1_manage_files} > /tmp/md5sum.txt"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+    
+    print_line
+  fi
+}
+
+function lab_grade {
+
+  print_header "Grading the student's work on ${targetb}:"
+  host_reachable ${targetb}
+
+  # Put in the steps to grade the lab (use print_PASS or print_FAIL)
+
+  pad " · Verifying original files on ${targetb}"
+  md5sum_test=$(${ssh} ${targetb} "md5sum ${comp_review1_manage_files}" | awk '{ print $1 }')
+  md5sum_test_compare=$(${ssh} ${targetb} "cat /tmp/md5sum.txt" | awk '{ print $1 }')
+  if [ "${md5sum_test}" == "${md5sum_test_compare}" ] &&
+  ${ssh} ${targetb} "test -s ${comp_review1_manage_files_txt}" &&
+  ${ssh} ${targetb} "test -s ${comp_review1_manage_files_copy_txt}" &&
+  ${ssh} ${targetb} "test -s ${comp_review1_long_listing_txt}"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying if ${comp_review1_grading} exists on ${targetb}"
+  if ${ssh} ${targetb} "test -d ${comp_review1_grading}"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying if the empty files exist on ${targetb}"
+  if ${ssh} ${targetb} "test -f ${comp_review1_grade1}" &&
+     ! ${ssh} ${targetb} "test -s ${comp_review1_grade1}" &&
+     ${ssh} ${targetb} "test -f ${comp_review1_grade2}" &&
+     ! ${ssh} ${targetb} "test -s ${comp_review1_grade2}" &&
+     ${ssh} ${targetb} "test -f ${comp_review1_grade3}" &&
+     ! ${ssh} ${targetb} "test -s ${comp_review1_grade3}"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Evaluating the hard link on ${targetb}"
+  review1_hardlink_verify=$(${ssh} ${targetb} "ls -i ${comp_review1_hardlink}" | awk '{ print $1 }')
+  review1_grade1_compare=$(${ssh} ${targetb} "ls -i ${comp_review1_grade1}" | awk '{ print $1 }')
+  if ${ssh} ${targetb} "test -f ${comp_review1_grade1}" &&
+     ${ssh} ${targetb} "test -f ${comp_review1_hardlink}" &&
+     [ "${review1_hardlink_verify}" == "${review1_grade1_compare}" ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Evaluating the soft link on ${targetb}"
+  review1_softlink_verify=$(${ssh} ${targetb} "file -b ${comp_review1_softlink}")
+  if [ "${review1_softlink_verify}" == "symbolic link to /home/student/grading/grade2" ] ||
+     [ "${review1_softlink_verify}" == "symbolic link to grading/grade2" ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Evaluating the longlisting.txt file on ${targetb}"
+  ${ssh} ${targetb} "cat ${comp_review1_long_listing_txt}" > /tmp/longlisting_verify.txt
+  ${ssh} ${targetb} "ls -l ${comp_review1_boot}" > /tmp/longlisting_compare.txt
+  if cmp /tmp/longlisting_verify.txt /tmp/longlisting_compare.txt
+  then
+    print_PASS &&
+    rm -f /tmp/longlisting_*.txt
+  else
+    print_FAIL &&
+    rm -f /tmp/longlisting_*.txt
+  fi
+
+  pad " · Evaluating the manage-files-copy.txt on ${targetb}"
+  cat > /tmp/manage-files_verify.txt << EOF
+Test AA
+Test BB
+A new line
+Test CC
+Test DD
+Test EE
+Test II
+Test JJ
+Test JJ
+EOF
+  ${ssh} ${targetb} "cat ${comp_review1_manage_files_copy_txt}" > /tmp/manage-files_compare.txt
+  if cmp /tmp/manage-files_verify.txt /tmp/manage-files_compare.txt
+  then
+    print_PASS &&
+    rm -f /tmp/manage-files_*.txt
+  else
+    print_FAIL &&
+    rm -f /tmp/manage-files_*.txt
+  fi
+
+
+  # Overall grade
+  print_line
+  pad 'Overall lab grade'
+  if [[ ${fail_count} -eq 0 ]]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  print_line
+}
+
+
+
+function lab_finish {
+
+  print_header "Completing the lab on ${targetb}:"
+  host_reachable ${targetb}
+
+  reqd_package='coreutils'        # Just an example
+
+  pad " · Ensuring that the required environment is clean on ${targetb}"
+  if ${ssh} ${targetb} "rpm -q --quiet ${reqd_package}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Deleting md5sum.txt from ${targetb}"
+  ${ssh} ${targetb} "rm -f /tmp/md5sum.txt"
+  if ! ${ssh} ${targetb} "test -e /tmp/md5sum.txt"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Deleting ${comp_review1_bin} recursively from ${targetb}"
+  ${ssh} ${targetb} "rm -rf ${comp_review1_bin}" 
+  if ! ${ssh} ${targetb} "test -e ${comp_review1_bin}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Deleting links from ${targetb}"
+  ${ssh} ${targetb} "rm -rf ${comp_review1_hardlink} ${comp_review1_softlink}" 
+  if ! ${ssh} ${targetb} "test -e ${comp_review1_hardlink}" &&
+     ! ${ssh} ${targetb} "test -e ${comp_review1_softlink}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Deleting ${comp_review1_grading} recursively from ${targetb}"
+  ${ssh} ${targetb} "rm -rf ${comp_review1_grading}" 
+  if ! ${ssh} ${targetb} "test -e ${comp_review1_grading}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

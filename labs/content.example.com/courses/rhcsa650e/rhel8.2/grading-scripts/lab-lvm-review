@@ -1,0 +1,337 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-lvm-review - grading script for creating logical volumes lab
+#
+# SYNOPSIS
+#     lab-lvm-review {start|grade|finish}
+#
+#        start   - prepare the system for starting the lab
+#        grade   - perform evaluation
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script verifies serverb is accessible. It checks for storage
+#     and lvm tools. It will work even if /dev/vdb on serverb is already
+#     in use.
+#
+# CHANGELOG
+#   * Fri May 24 2019 George Hacker <ghacker@redhat.com>
+#   - clean up after the storage chapter if not finished
+#   - only create needed resources when they don't exist
+#   - back up and restore original /etc/fstab
+#   * Fri Mar 27 2019 Marc Kesler <rkesler@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='serverb'
+reqd_packages='lvm2 parted psmisc'
+dir1='/storage/data1'
+dir2='/storage/data2'
+blkdev='/dev/vdb'
+pv1="${blkdev}1"
+pv2="${blkdev}2"
+vgname="${target}_01_vg"
+lvname1="${target}_01_lv"
+lvname2="${target}_02_lv"
+ch07s05_fstab='/var/tmp/fstab.ch07s05.LAB'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start grade finish)
+
+#
+# The code for this function was adapted from lab-storage-review. Thank
+# you, Herve Quatremain <hquatrem@redhat.com>.
+#
+function cleanup_disk2 {
+
+  pad " · Cleaning up the second disk on ${target} "
+  for i in {5..1}
+  do
+    if ${ssh} ${target} "test -b ${blkdev}$i"
+    then
+#     ${ssh} ${target} "fuser -k ${dir}"   IDEALLY KILL PROCESSES USING THE FILE SYSTEM
+      ${ssh} ${target} "umount -l ${blkdev}$i"
+      ${ssh} ${target} "swapoff ${blkdev}$i"
+      ${ssh} ${target} "dd if=/dev/zero of=${blkdev}$i bs=512 count=10"
+      ${ssh} ${target} "parted --script ${blkdev} rm $i"
+    fi
+  done
+  ${ssh} ${target} "wipefs --all --force ${blkdev}"
+  ${ssh} ${target} "test -b ${blkdev} && dd if=/dev/zero of=${blkdev} bs=1024 count=2048"
+  print_SUCCESS
+
+}
+
+function lab_start {
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} for lab exercise work:"
+  print_line
+  host_reachable ${target}
+
+  #
+  # The following code was adapted from lab-storage-review. Thank you,
+  # Herve Quatremain <hquatrem@redhat.com>.
+  #
+  ch06s05_fstab='/var/tmp/fstab.ch06s05.LAB'
+  if ${ssh} ${target} "test -f ${ch06s05_fstab}"
+  then
+    print_line 'Cleaning up after the storage chapter lab:'
+    print_line
+    pad " · Restoring /etc/fstab on ${target} "
+    if ${ssh} ${target} "cp ${ch06s05_fstab} /etc/fstab"
+    then
+      ${ssh} ${target} "rm -f ${ch06s05_fstab}"
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+    cleanup_disk2
+    print_line
+  fi
+
+  print_line "Checking packages for lab exercise work:"
+  print_line
+  for package in ${reqd_packages}
+  do
+    pad " · Ensuring ${package} package is installed "
+    if ${ssh} ${target} "rpm -q ${package}" ||
+       ${ssh} ${target} "yum -y install ${package}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  done
+  print_line
+
+  print_line "Checking storage for lab exercise work:"
+  print_line
+  pad " · Ensuring ${blkdev} GPT block device is present "
+  if ${ssh} ${target} "parted ${blkdev} print | grep -q 'Partition Table: unknown'"
+  then
+    ${ssh} ${target} "parted -s ${blkdev} mklabel gpt"
+  fi
+  print_SUCCESS
+
+  if ${ssh} ${target} "test ! -b ${pv1}"
+  then
+    pad " · Creating ${pv1} partition "
+    if ${ssh} ${target} "parted -s ${blkdev} mkpart primary 1MiB 513MiB" &&
+       ${ssh} ${target} "parted -s ${blkdev} set 1 lvm on"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  if ! ${ssh} ${target} "pvs ${pv1}"
+  then
+    pad " · Creating ${pv1} physical volume "
+    if ${ssh} ${target} "pvcreate ${pv1}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  if ! ${ssh} ${target} "vgs ${vgname}"
+  then
+    pad " · Creating ${vgname} volume group "
+    if ${ssh} ${target} "vgcreate ${vgname} ${pv1}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  if ! ${ssh} ${target} "lvs /dev/${vgname}/${lvname1}"
+  then
+
+    pad " · Creating ${lvname1} logical volume "
+    if ${ssh} ${target} "lvcreate -Zy -Wy --yes -n ${lvname1} -L 256M ${vgname}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    if ${ssh} ${target} "lvs /dev/${vgname}/${lvname1}"
+    then
+      pad " · Formatting XFS filesystem "
+      if ${ssh} ${target} "mkfs -t xfs /dev/${vgname}/${lvname1}"
+      then
+        print_SUCCESS
+      else
+        print_FAIL
+      fi
+      pad " · Creating ${dir1} mount point "
+      ${ssh} ${target} "mkdir -p ${dir1}"
+      print_SUCCESS
+      if ! ${ssh} ${target} "test -f ${ch07s05_fstab}"
+      then
+        pad " · Saving /etc/fstab on ${target}"
+        ${ssh} ${target} "cp /etc/fstab ${ch07s05_fstab}"
+        print_SUCCESS
+        pad " · Updating /etc/fstab "
+        ${ssh} ${target} "echo "/dev/${vgname}/${lvname1}    ${dir1}    xfs  defaults  1 2" >> /etc/fstab"
+        print_SUCCESS
+        pad " · Mounting filesystem "
+        ${ssh} ${target} "mount -a"
+        print_SUCCESS
+      fi
+    fi
+  fi
+
+  print_line
+
+}
+
+function lab_grade {
+
+  print_header "Grading the student's work on ${target}:"
+  host_reachable ${target}
+
+  pad " · ${lvname1} is 768MiB in size "
+  if ${ssh} ${target} "lvs /dev/${vgname}/${lvname1}" | grep -q 768.00m
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · ${lvname2} is 128MiB in size "
+  if ${ssh} ${target} "lvs /dev/${vgname}/${lvname2}" | grep -q 128.00m
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · ${lvname2} is mounted at ${dir2} "
+  if ${ssh} ${target} "df -h /dev/mapper/${vgname}-${lvname2}" | grep -q data2
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · ${lvname2} is formatted with an XFS filesystem "
+  if ${ssh} ${target} "blkid /dev/mapper/${vgname}-${lvname2}" | grep -q xfs
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · ${lvname2} belongs to the ${vgname} volume group "
+  if ${ssh} ${target} "lvs /dev/${vgname}/${lvname2}" | grep -q ${vgname}
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · ${vgname} has the correct size "
+  vgsize=$(${ssh} ${target} vgdisplay ${vgname} | awk '/VG Size/ { print $3 }' | cut -d. -f1)
+  if [ ${vgsize} -ge 1016 ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  # Overall grade
+  print_line
+  pad 'Overall lab grade'
+  if [[ ${fail_count} -eq 0 ]]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  print_line
+
+}
+
+function lab_finish {
+
+  print_header "Completing the lab on ${target}:"
+  host_reachable ${target}
+
+  for dir in ${dir1} ${dir2}
+  do
+    if ${ssh} ${target} "df -h ${dir}"
+    then
+      pad " · Unmounting ${dir} filesystem "
+      ${ssh} ${target} "fuser -km ${dir}"
+      ${ssh} ${target} "umount ${dir}"
+      print_SUCCESS
+    fi
+
+    if ${ssh} ${target} "test -d ${dir}"
+    then
+      pad " · Removing ${dir} directory "
+      ${ssh} ${target} "rmdir ${dir}"
+      print_SUCCESS
+    fi
+  done
+
+  if ${ssh} ${target} "test -f ${ch07s05_fstab}"
+  then
+    pad " · Restoring /etc/fstab on ${target}"
+    ${ssh} ${target} "cp ${ch07s05_fstab} /etc/fstab && rm -f ${ch07s05_fstab}"
+    print_SUCCESS
+  fi
+
+  for lvname in ${lvname1} ${lvname2}
+  do
+    if ${ssh} ${target} "lvdisplay /dev/${vgname}/${lvname}"
+    then
+      pad " · Removing ${lvname} logical volume "
+      ${ssh} ${target} "lvremove -f /dev/${vgname}/${lvname}"
+      print_SUCCESS
+    fi
+  done
+
+  if ${ssh} ${target} "vgdisplay ${vgname}"
+  then
+    pad " · Removing ${vgname} volume group "
+    ${ssh} ${target} "vgremove -f ${vgname}"
+    print_SUCCESS
+  fi
+
+  for pv in ${pv1} ${pv2}
+  do
+    if ${ssh} ${target} "pvdisplay ${pv}"
+    then
+      pad " · Removing physical volume ${pv} "
+      ${ssh} ${target} "pvremove -f ${pv}"
+      print_SUCCESS
+    fi
+  done
+
+  cleanup_disk2
+  print_line
+
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

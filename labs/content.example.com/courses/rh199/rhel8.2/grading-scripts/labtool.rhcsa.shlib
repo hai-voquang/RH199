@@ -1,0 +1,653 @@
+#
+# Copyright 2019, 2020 Red Hat, Inc.
+#
+# NAME
+#     labtool.rhcsa.shlib - lab grading script rhcsa function library
+#
+# SYNOPSIS
+#     Add the following line at the top of your script:
+#
+#        source /path/to/labtool.rhcsa.shlib
+#
+#     *after* the source of the generic labtool.shlib
+#
+# DESCRIPTION
+#     Lab grading script function library for RHCSA courses.
+#
+# CHANGELOG
+#   * Tue Aug 25 2020 Herve Quatremain <hquatrem@redhat.com>
+#   - adding functions to backup/restore files and managing GRUB2 configuration
+#   * Thu Aug 13 2010 Herve Quatremain <hquatrem@redhat.com>
+#   - added functions to manage the container tools and registry
+#   * Fri May 03 2019 George Hacker <ghacker@redhat.com>
+#   - added functions to create and delete users and groups
+#   * Mon Apr 01 2019 Snehangshu Karmakar <snehk@redhat.com>
+#   - Added new library function to get NIC name
+
+#####################################
+# global variable definitions       #
+#####################################
+
+# Export LANG so we get consistent results
+# For instance, fr_FR uses comma (,) as the decimal separator.
+export LANG=en_US.UTF-8
+
+#####################################
+# course-related variables          #
+#####################################
+
+#declare -r downloads_dir='/home/student/Downloads'
+#declare -r materials='http://materials.example.com/'
+
+#####################################
+# general-purpose functions         #
+#####################################
+
+# Usage: get_nicname ${server} 1, Returns: nicname|1, Status: Tested
+# where 1 is first NIC; use 2, 3 and so on for second, and third NICs.
+#
+function get_nicname() {
+
+  local nics=()
+
+  if [[ $# -ne 2 ]]; then
+    >&2 echo "[!] ${FUNCNAME[0]}: incorrect argument count"
+    return 1
+  fi
+
+  local server="${1}"
+  local nic=$(${2} - 1)
+  local nics=( $(${ssh} ${server} "lshw -class network | grep -A 1 'bus info' | grep name | awk -F': ' '{print \$2}'") )
+  if [[ -z ${nics[${nic}]} ]]; then
+    return 1
+  else
+    echo "${nics[${nic}]}"
+  fi
+}
+
+function rhel_add_group {
+
+  local target_host="${1}" grp_name="${2}" options="${3}"
+
+  if ! ${ssh} ${target_host} "grep '^${grp_name}:' /etc/group"
+  then
+    pad " · Creating ${grp_name} group on ${target_host} "
+    ${ssh} ${target_host} "groupadd ${options} ${grp_name}"
+    print_SUCCESS
+  fi
+
+}
+
+function rhel_del_group {
+
+  local target_host="${1}" grp_name="${2}"
+
+  if ${ssh} ${target_host} "grep '^${grp_name}:' /etc/group"
+  then
+    pad " · Deleting ${grp_name} group on ${target_host} "
+    ${ssh} ${target_host} "groupdel ${grp_name}"
+    print_SUCCESS
+  fi
+
+}
+
+function rhel_add_user {
+
+  local target_host="${1}" usr_name="${2}" usr_pass="${3}" options="${4}"
+
+  if ! ${ssh} ${target_host} "grep '^${usr_name}:' /etc/passwd"
+  then
+    pad " · Creating required user ${usr_name} in ${target_host} "
+    ${ssh} ${target_host} "useradd ${options} ${usr_name}"
+    ${ssh} ${target_host} "echo '${usr_pass}' | passwd --stdin ${usr_name}"
+    print_SUCCESS
+  fi
+
+}
+
+function rhel_del_user {
+
+  local target_host="${1}" usr_name="${2}"
+
+  if ${ssh} ${target_host} "grep '^${usr_name}:' /etc/passwd"
+  then
+    pad " · Deleting ${usr_name} user on ${target_host} "
+    ${ssh} ${target_host} "userdel -rf ${usr_name}"
+    print_SUCCESS
+  fi
+
+}
+
+# Deploy the Yum repository configuration file in
+# /etc/yum.repos.d/updates.repo on the target host (provided as the first
+# argument)
+# The Yum repository defined in that file contains RHEL 8.2 updates required
+# for running containers.
+#
+# Returns 0 on success and another value on error.
+#
+# Example:
+#   rhel_containers_add_repository servera
+#
+function rhel_containers_add_repository {
+
+  local target_host="${1}"
+  local tmp_file="$(mktemp -u)"
+
+  pad " · Configuring Yum repository on ${target_host}"
+  if ${ssh} ${target_host} "
+    curl -f -o ${tmp_file} http://materials.example.com/updates.repo &&
+    mv ${tmp_file} /etc/yum.repos.d/updates.repo"
+  then
+    ${ssh} ${target_host} "yum clean all"
+    print_SUCCESS
+    return 0
+  fi
+  ${ssh} ${target_host} "rm -f ${tmp_file}"
+  print_FAIL
+  return 1
+
+}
+
+# Deploy the container tools configuration file on the target host (provided
+# as the first argument) for the given user
+#
+# The configuration file restricts the container image search operations
+# (podman search <image>) to registry.lab.example.com. It also configures
+# registry.lab.example.com as an insecure container registry.
+#
+# The configuration file is deployed in ~/.config/containers/registries.conf.
+# The default configuration file in /etc/containers/registries.conf is not
+# modified.
+#
+# Returns 0 on success and another value on error.
+#
+# Example:
+#   rhel_containers_configure_quay_client_user servera student
+#
+function rhel_containers_configure_quay_client_user {
+
+  local target_host="${1}"
+  local target_user="${2}"
+
+  pad " · Configuring ${target_user} access to registry on ${target_host}"
+  if ${ssh} ${target_host} "
+    mkdir -p ~${target_user}/.config/containers &&
+    curl -f -o ~${target_user}/.config/containers/registries.conf http://materials.example.com/registries.conf &&
+    chown -R ${target_user}: ~${target_user}/.config"
+  then
+    print_SUCCESS
+    return 0
+  fi
+  print_FAIL
+  return 1
+
+}
+
+# Deploy the container tools configuration file on the target host (provided
+# as the first argument)
+#
+# The configuration file restricts the container image search operations
+# (podman search <image>) to registry.lab.example.com. It also configures
+# registry.lab.example.com as an insecure container registry.
+#
+# The configuration file is deployed for root and student in
+# ~/.config/containers/registries.conf. The default configuration file in
+# /etc/containers/registries.conf is not modified.
+#
+# Returns 0 on success and another value on error.
+#
+# Example:
+#   rhel_containers_configure_quay_client servera
+#
+function rhel_containers_configure_quay_client {
+
+  local target_host="${1}"
+
+  rhel_containers_configure_quay_client_user ${target_host} student &&
+  rhel_containers_configure_quay_client_user ${target_host} root
+
+}
+
+# Unconfigure the container tools on the target host (provided as the first
+# argument) for the given user
+#
+# Always returns 0 (always succeeds)
+#
+# Example:
+#   rhel_containers_unconfigure_quay_client_user servera student
+#
+function rhel_containers_unconfigure_quay_client_user {
+
+  local target_host="${1}"
+  local target_user="${2}"
+
+  pad " · Unconfiguring ${target_user} access to registry on ${target_host}"
+  ${ssh} ${target_host} "rm -rf ~${target_user}/.config/containers"
+  print_SUCCESS
+  return 0
+
+}
+
+# Unconfigure the container tools on the target host (provided as the first
+# argument)
+#
+# Always returns 0 (always succeeds)
+#
+# Example:
+#   rhel_containers_unconfigure_quay_client servera
+#
+function rhel_containers_unconfigure_quay_client {
+
+  local target_host="${1}"
+
+  rhel_containers_unconfigure_quay_client_user ${target_host} student
+  rhel_containers_unconfigure_quay_client_user ${target_host} devops
+  rhel_containers_unconfigure_quay_client_user ${target_host} root
+  return 0
+
+}
+
+# Install the Yum container-tools module on the target host (provided as the
+# first argument)
+#
+# Before calling this function you must deploy the Yum repository (see the
+# rhel_containers_add_repository() and rhel_containers_deploy_client()
+# functions)
+#
+# Returns 0 on success and another value on error.
+#
+# Example:
+#   if rhel_containers_add_repository servera
+#   then
+#     rhel_containers_install_tools servera
+#   fi
+#
+function rhel_containers_install_tools {
+
+  local target_host="${1}"
+  local pid
+
+  pad " · Installing the container tools on ${target_host}"
+  ${ssh} ${target_host} "yum module install -y container-tools" &
+  pid=$!
+  spinner ${pid}
+  if wait ${pid}
+  then
+    print_SUCCESS
+    return 0
+  fi
+  print_FAIL
+  return 1
+
+}
+
+# Remove the Yum container-tools module from the target host (provided as the
+# first argument)
+#
+# Returns 0 on success and another value on error.
+#
+# Example:
+#   rhel_containers_remove_tools servera
+#
+function rhel_containers_remove_tools {
+
+  local target_host="${1}"
+  local pid
+
+  pad " · Removing the container tools from ${target_host}"
+  ${ssh} ${target_host} "yum module remove -y container-tools" &
+  pid=$!
+  spinner ${pid}
+  if wait ${pid}
+  then
+    print_SUCCESS
+    return 0
+  fi
+  print_FAIL
+  return 1
+
+}
+
+# Delete all the containers and local images for the given user on the target
+# host (provided as the first argument)
+#
+# Always returns 0 (always succeeds)
+#
+# Example:
+#   rhel_containers_rm_containers_user servera student
+#
+function rhel_containers_rm_containers_user {
+
+  local target_host="${1}"
+  local target_user="${2}"
+
+  pad " · Removing ${target_user} containers on ${target_host}"
+  ${ssh} ${target_host} "su - ${target_user} -c 'podman stop --all ; podman rm --all --force ; podman rmi --all --force ; podman logout --all ; rm -rf ~${target_user}/.local/share/containers'"
+  print_SUCCESS
+  return 0
+
+}
+
+# Delete all the containers and local images from the target host (provided
+# as the first argument)
+#
+# Always returns 0 (always succeeds)
+#
+# Example:
+#   rhel_containers_rm_containers servera
+#
+function rhel_containers_rm_containers {
+
+  local target_host="${1}"
+
+  rhel_containers_rm_containers_user ${target_host} student
+  rhel_containers_rm_containers_user ${target_host} devops
+  rhel_containers_rm_containers_user ${target_host} root
+  ${ssh} ${target_host} "rm -f /var/lib/cni/networks/podman/[0-9]*"
+  return 0
+
+}
+
+# Declaring the registry.lab.example.com name in /etc/hosts on the target host
+# (provided as the first argument)
+#
+# Returns 0 on success and another value on error.
+#
+# Example:
+#   rhel_containers_add_registry_DNS servera
+#
+function rhel_containers_add_registry_DNS {
+
+  local target_host="${1}"
+
+  if ${ssh} ${target_host} "getent hosts registry.lab.example.com"
+  then
+    return 0
+  fi
+
+  pad " · Declaring registry.lab.example.com on ${target_host}"
+  ${ssh} ${target_host} "sed -i -e 's/utility.lab.example.com/utility.lab.example.com   registry.lab.example.com/' /etc/hosts"
+  if ${ssh} ${target_host} "getent hosts registry.lab.example.com"
+  then
+    print_SUCCESS
+    return 0
+  fi
+  print_FAIL
+  return 1
+
+}
+
+# Removing registry.lab.example.com from /etc/hosts on the target host
+# (provided as the first argument)
+#
+# Always returns 0 (always succeeds)
+#
+# Example:
+#   rhel_containers_remove_registry_DNS servera
+#
+function rhel_containers_remove_registry_DNS {
+
+  local target_host="${1}"
+
+  if ! ${ssh} ${target_host} "getent hosts registry.lab.example.com"
+  then
+    return 0
+  fi
+
+  pad " · Removing registry.lab.example.com from ${target_host}"
+  ${ssh} ${target_host} "sed -i -e 's/utility.lab.example.com   registry.lab.example.com/utility.lab.example.com/' /etc/hosts"
+  print_SUCCESS
+  return 0
+
+}
+
+# Check the status of Quay running on utility and restart it if it does not
+# work.
+#
+# Returns 0 on success (Quay is responding) and another value on error.
+#
+# Example:
+#   rhel_containers_check_quay
+#
+function rhel_containers_check_quay {
+
+  local target_host=utility
+  local tries=3
+  local pid
+  local check_cmd="podman search registry.lab.example.com/ubi | grep -q ubi./ubi"
+
+  # registry.lab.example.com is an alias for utility.lab.example.com
+  host_reachable ${target_host}
+
+  pad " · Checking the status of the container registry"
+  if ${ssh} ${target_host} "${check_cmd}"
+  then
+    print_SUCCESS
+    return 0
+  fi
+
+  # First, try to use systemd to stop and then start the containers
+  (
+    ${ssh} ${target_host} "systemctl stop --no-block container-quay.service"
+    sleep 20
+    ${ssh} ${target_host} "systemctl stop --no-block container-mysql.service container-redis.service"
+    sleep 5
+    ${ssh} ${target_host} "podman unpause --all ; podman stop --all ; rm -f /var/lib/cni/networks/podman/[0-9]*"
+    sleep 5
+
+    ${ssh} ${target_host} "systemctl start --no-block container-mysql.service container-redis.service"
+    sleep 5
+    ${ssh} ${target_host} "systemctl start --no-block container-quay.service"
+    sleep 60
+  ) &
+  spinner $!
+  if ${ssh} ${target_host} "${check_cmd}"
+  then
+    print_SUCCESS
+    return 0
+  fi
+
+  (
+    while :
+    do
+      # Stopping all the containers
+      ${ssh} ${target_host} "podman unpause --all ; podman stop --all ; rm -f /var/lib/cni/networks/podman/[0-9]*"
+      sleep 5
+
+      ${ssh} ${target_host} "podman start mysql ; podman start redis"
+      sleep 5
+
+      ${ssh} ${target_host} "podman start quay"
+      sleep 60
+
+      if ${ssh} ${target_host} "${check_cmd}"
+      then
+        exit 0
+      fi
+
+      let tries=tries-1
+      if [ ${tries} -eq 0 ]
+      then
+        exit 1
+      fi
+    done
+  ) &
+  pid=$!
+  spinner ${pid}
+  if wait ${pid}
+  then
+    print_SUCCESS
+    return 0
+  fi
+  print_FAIL
+  return 1
+
+}
+
+# Deploy the container tools on the target host (provided as the first
+# argument) and configure then for the classroom registry
+#
+# Returns 0 on success and another value on error.
+#
+# Example:
+#   rhel_containers_deploy_client servera
+#
+function rhel_containers_deploy_client {
+
+  local target_host="${1}"
+
+  rhel_containers_add_registry_DNS ${target_host} && \
+  rhel_containers_add_repository ${target_host} && \
+  rhel_containers_install_tools ${target_host} && \
+  rhel_containers_configure_quay_client ${target_host}
+
+}
+
+# Remove the container tools on the target host (provided as the first
+# argument)
+#
+# Returns 0 on success and another value on error.
+#
+# Example:
+#   rhel_containers_undeploy_client servera
+#
+function rhel_containers_undeploy_client {
+
+  local target_host="${1}"
+
+  rhel_containers_rm_containers ${target_host} && \
+  rhel_containers_unconfigure_quay_client ${target_host} && \
+  rhel_containers_remove_tools ${target_host} && \
+  rhel_containers_remove_registry_DNS ${target_host}
+
+}
+
+# Check if image exists in registry.
+#
+# Returns 0 on success (image exists) and another value on error.
+#
+# Example:
+#   rhel_containers_inspect_image admin adminpass registry.lab.example.com/rhel8/httpd-24 DockerVersion
+#
+function rhel_containers_inspect_image {
+
+  local username="${1}"
+  local password="${2}"
+  local imagepath="${3}"
+  local string="${4}"
+  local imagename=$(echo ${imagepath} | cut -d/ -f2,3)
+
+  pad " · Checking that image ${imagename} exists in the registry"
+  if ${ssh} utility.lab.example.com "skopeo inspect --creds=${username}:${password} docker://${imagepath} | grep ${string} &> /dev/null";  then
+    print_SUCCESS
+    return 0
+  fi
+  print_FAIL
+  return 1
+
+}
+
+# Save the provided files on the target host (provided as the first argument)
+#
+# The files and directories given as parameters are saved in a tar file on
+# the target hosts.
+# Missing files and directories are skipped without reporting the error.
+#
+# Returns 0 on success and another value on error.
+#
+# Example:
+#   rhel_backup servera /etc/hosts /boot /etc/systemd/system
+#
+function rhel_backup {
+
+  local target_host="${1}"
+  shift
+
+  local TAR_FILE="/var/tmp/${problem_name}-bck.tgz"
+
+  if ${ssh} ${target_host} "test -s ${TAR_FILE}"
+  then
+    return 0
+  fi
+
+  pad " · Saving configuration files on ${target_host}"
+  if ${ssh} ${target_host} "rm -f ${TAR_FILE} && tar -zcf ${TAR_FILE} -C / --ignore-failed-read --xattrs $*"
+  then
+    print_SUCCESS
+    return 0
+  fi
+  print_FAIL
+  return 1
+
+}
+
+# Restore the files previously saved by the rhel_backup() function on the
+# target host (provided as an argument)
+#
+# Returns 0 on success and another value on error (missing tar file or
+# tar error).
+#
+# Example:
+#   rhel_restore servera
+#
+function rhel_restore {
+
+  local target_host="${1}"
+  local TAR_FILE="/var/tmp/${problem_name}-bck.tgz"
+
+  pad " · Restoring configuration files on ${target_host}"
+  if ! ${ssh} ${target_host} "test -s ${TAR_FILE}"
+  then
+    ${ssh} ${target_host} "rm -f ${TAR_FILE}"
+    print_FAIL
+    return 1
+  fi
+
+  if ${ssh} ${target_host} "tar -xf ${TAR_FILE} -C / --xattrs && rm -f ${TAR_FILE}"
+  then
+    print_SUCCESS
+    return 0
+  fi
+  print_FAIL
+  return 1
+
+}
+
+# Regenerate the GRUB2 configuration file on the target host (provided as an
+# argument)
+#
+# Returns 0 on success and another value on error
+#
+# Example:
+#   rhel_grub2_mkconfig servera
+#
+function rhel_grub2_mkconfig {
+
+  local target_host="${1}"
+  local GRUB_CFG_FILE
+
+  pad " · Updating GRUB2 configuration on ${target_host}"
+  # Trying to detect whether the system is using UEFI or BIOS
+  # To do so, check the size of the /boot/grub2/grub.cfg file. If it's small
+  # (< 1000 bytes) or missing, then UEFI is probably used.
+  local BIOS_SIZE=$(${ssh} ${target_host} "stat --format %s /boot/grub2/grub.cfg")
+  if [ $? -ne 0 -o "${BIOS_SIZE}" -lt 1000 ]
+  then
+    GRUB_CFG_FILE="/boot/efi/EFI/redhat/grub.cfg"
+  else
+    GRUB_CFG_FILE="/boot/grub2/grub.cfg"
+  fi
+
+  if ${ssh} ${target_host} "grub2-mkconfig > ${GRUB_CFG_FILE}"
+  then
+    print_SUCCESS
+    return 0
+  else
+    print_FAIL
+    return 1
+  fi
+
+}
+
+# vim: ts=4 sw=2

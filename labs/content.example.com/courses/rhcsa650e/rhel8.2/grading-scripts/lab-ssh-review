@@ -1,0 +1,351 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-ssh-review - grading script for RH124 Lab Configuring and Securing SSH
+#
+# SYNOPSIS
+#     lab-ssh-review {start|grade|finish}
+#
+#        start   - prepare the system for starting the lab
+#        grade   - perform evaluation steps on the system
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start
+#     or finish for the particular lab of awesomeness.
+#
+# CHANGELOG
+#   * Tue May 21 2019 Saumik Paul <saumik@redhat.com>
+#   - Updated the start/grade/finish verbs to make the conditional blocks more robust
+#   * Mon Feb 11 2019 Saumik Paul <saumik@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='workstation'
+targeta='servera'
+targetb='serverb'
+#known_hosts=/home/student/.ssh/known_hosts
+sshd_config=/etc/ssh/sshd_config
+lab_user1='production1'
+lab_user2='production2'
+lab_user_pw='redhat'
+passwd='/etc/passwd'
+shadow='/etc/shadow'
+content_rhel_ver='rhel8.2'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start grade finish)
+
+
+function lab_start {
+
+  reqd_package='openssh-server openssh-clients'        # Just an example
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${targeta}, ${targetb} and ${target} for lab exercise work:"
+  print_line
+  host_reachable ${targeta} ${targetb}
+
+
+  # Check for lab prerequisites (perhaps a required package?).
+  if ! ${ssh} ${targeta} "rpm -q --quiet ${reqd_package}"
+  then
+    pad " · Error - ${reqd_package} is not installed on ${targeta}"
+    print_FAIL
+  elif ! ${ssh} ${targetb} "rpm -q --quiet ${reqd_package}"
+  then
+    pad " · Error - ${reqd_package} is not installed on ${targetb}"
+  else
+    pad " · Enabling sshpass on ${targeta}"
+    if ${ssh} ${targeta} "test -f /etc/yum.repos.d/ansible.repo" &&
+       ${ssh} ${targeta} "test -s /etc/yum.repos.d/ansible.repo"
+    then
+      if ${ssh} ${targeta} yum -y install sshpass
+      then
+        print_SUCCESS
+      else
+        print_FAIL
+      fi
+    else
+      cat > /tmp/ansible.repo << EOF
+[ansible-2.9-for-rhel-8-x86_64-rpms]
+baseurl = http://content.example.com/${content_rhel_ver}/x86_64/rhel8-additional/ansible-2.9-for-rhel-8-x86_64-rpms
+enabled = true
+gpgcheck = false
+name = Red Hat Enterprise Linux 8.0 Additional (dvd)
+EOF
+      if ${scp} /tmp/ansible.repo ${targeta}:/etc/yum.repos.d/ &&
+         rm -f /tmp/ansible.repo &&
+         ${ssh} ${targeta} yum -y install sshpass
+      then
+        print_SUCCESS
+      else
+        print_FAIL
+      fi
+    fi
+
+    pad " · Enabling sshpass on ${target}"
+    if "test -f /etc/yum.repos.d/ansible.repo" &&
+       "test -s /etc/yum.repos.d/ansible.repo"
+    then
+      if yum -y install sshpass
+      then
+        print_SUCCESS
+      else
+        print_FAIL
+      fi
+    else
+      cat > /tmp/ansible.repo << EOF
+[ansible-2.9-for-rhel-8-x86_64-rpms]
+baseurl = http://content.example.com/${content_rhel_ver}/x86_64/rhel8-additional/ansible-2.9-for-rhel-8-x86_64-rpms
+enabled = true
+gpgcheck = false
+name = Red Hat Enterprise Linux 8.0 Additional (dvd)
+EOF
+      if cp /tmp/ansible.repo /etc/yum.repos.d/ &&
+         rm -f /tmp/ansible.repo &&
+         yum -y install sshpass
+      then
+        print_SUCCESS
+      else
+        print_FAIL
+      fi
+    fi
+
+    pad " · Creating ${lab_user1} and ${lab_user2} on ${targeta}"
+    if ${ssh} ${targeta} "grep -e ${lab_user1} -e ${lab_user2} ${passwd} ${shadow}"
+    then
+      ${ssh} ${targeta} "userdel -r ${lab_user1}; userdel -r ${lab_user2}"
+      if ${ssh} ${targeta} "useradd ${lab_user1} && useradd ${lab_user2}" &&
+	 ${ssh} ${targeta} "echo redhat | passwd --stdin ${lab_user1}" &&
+	 ${ssh} ${targeta} "echo redhat | passwd --stdin ${lab_user2}"
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    else
+      if ${ssh} ${targeta} "useradd ${lab_user1} && useradd ${lab_user2}" &&
+         ${ssh} ${targeta} "echo redhat | passwd --stdin ${lab_user1}" &&
+         ${ssh} ${targeta} "echo redhat | passwd --stdin ${lab_user2}"
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    fi
+
+    pad " · Creating ${lab_user1} and ${lab_user2} on ${targetb}"
+    if ${ssh} ${targetb} "grep -e ${lab_user1} -e ${lab_user2} ${passwd} ${shadow}"
+    then
+      ${ssh} ${targetb} "userdel -r ${lab_user1}; userdel -r ${lab_user2}"
+      if ${ssh} ${targetb} "useradd ${lab_user1} && useradd ${lab_user2}" &&
+	 ${ssh} ${targetb} "echo redhat | passwd --stdin ${lab_user1}" &&
+	 ${ssh} ${targetb} "echo redhat | passwd --stdin ${lab_user2}"
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    else
+      if ${ssh} ${targetb} "useradd ${lab_user1} && useradd ${lab_user2}" &&
+         ${ssh} ${targetb} "echo redhat | passwd --stdin ${lab_user1}" &&
+         ${ssh} ${targetb} "echo redhat | passwd --stdin ${lab_user2}"
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    fi
+
+    pad " · Ensuring a clean temporary files' directory on ${targetb}"
+    if ${ssh} ${targetb} "rm -f /tmp/{md5sum_ssh_lab_config.txt,sshd_lab_config.orig}" &&
+       ! ${ssh} ${targetb} "test -e /tmp/md5sum_ssh_lab_config.txt" &&
+       ! ${ssh} ${targetb} "test -e /tmp/sshd_lab_config.orig"
+    then
+      print_SUCCESS
+    else
+      if ! ${ssh} ${targetb} "test -e /tmp/md5sum_ssh_lab_config.txt" &&
+         ! ${ssh} ${targetb} "test -e /tmp/sshd_lab_config.orig"
+      then
+        print_SUCCESS
+      else
+        print_FAIL
+      fi
+    fi
+
+    pad " · Backing up ${sshd_config} on ${targetb}"
+    if ${ssh} ${targetb} "cp -f ${sshd_config} /tmp/sshd_lab_config.orig" &&
+       ${ssh} ${targetb} "test -e /tmp/sshd_lab_config.orig"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Recording the md5sum of ${sshd_config} on ${targetb}"
+    md5sum_sshd_config=$(${ssh} ${targetb} "md5sum /etc/ssh/sshd_config | cut -d\  -f1")
+    ${ssh} ${targetb} "echo ${md5sum_sshd_config} > /tmp/md5sum_ssh_lab_config.txt"
+    md5sum_ssh_lab_config=$(${ssh} ${targetb} "cat /tmp/md5sum_ssh_lab_config.txt")
+    if ${ssh} ${targetb} "test -s /tmp/md5sum_ssh_lab_config.txt" &&
+       [ "${md5sum_ssh_lab_config}" == "${md5sum_sshd_config}" ]
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    print_line
+  fi
+}
+
+function lab_grade {
+
+  print_header "Grading the student's work on ${targetb}:"
+  host_reachable ${targeta} ${targetb}
+
+  # Put in the steps to grade the lab (use print_PASS or print_FAIL)
+  pkg_verify='rpm -q sshpass'
+
+  pad " · Verifying SSH key-based authentication on ${targetb}"
+  production1_verify=$(${ssh} ${targeta} "ssh -i /home/production1/.ssh/id_rsa -o PubkeyAuthentication=yes -o PasswordAuthentication=no -o StrictHostKeyChecking=no production1@${targetb} whoami")
+  if [ "${production1_verify}" == "production1" ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying prevention of root user's SSH login on ${targetb}"
+  if ${ssh} ${targeta} ${pkg_verify}
+  then
+    root_verify=$(${ssh} ${targeta} "sshpass -predhat ssh -o PubkeyAuthentication=no -o PasswordAuthentication=yes -o StrictHostKeyChecking=no root@${targetb} whoami")
+    if [ "${root_verify}" != root ]
+    then
+      print_PASS
+    else
+      print_FAIL
+    fi
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying prevention of SSH password-based login on ${targetb}"
+  if ${ssh} ${targeta} ${pkg_verify}
+  then
+    production2_verify=$(${ssh} ${targeta} "sshpass -predhat ssh -o PubkeyAuthentication=no -o PasswordAuthentication=yes -o StrictHostKeyChecking=no production2@${targetb} whoami")
+    if [ "${production2_verify}" != production2 ]
+    then
+      print_PASS
+    else
+      print_FAIL
+    fi
+  else
+    print_FAIL
+  fi
+
+  # Overall grade
+  print_line
+  pad 'Overall lab grade'
+  if [[ ${fail_count} -eq 0 ]]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  print_line
+}
+
+function lab_finish {
+
+  print_header "Completing the lab on ${targeta} and ${targetb}:"
+  host_reachable ${targeta} ${targetb}
+
+  pad " · Restoring original ${sshd_config} on ${targetb}"
+  ${ssh} -t -o PasswordAuthentication=no -o PubkeyAuthentication=yes -o StrictHostKeyChecking=no  student@${targetb} "echo student | sudo -S cp -f /tmp/sshd_lab_config.orig /etc/ssh/sshd_config"
+  if ${ssh} -t -o PasswordAuthentication=no -o PubkeyAuthentication=yes -o StrictHostKeyChecking=no  student@${targetb} "echo student | sudo -S grep '^PermitRootLogin yes$' /etc/ssh/sshd_config" &&
+     ${ssh} -t -o PasswordAuthentication=no -o PubkeyAuthentication=yes -o StrictHostKeyChecking=no  student@${targetb} "echo student | sudo -S grep '^PasswordAuthentication yes$' /etc/ssh/sshd_config" &&
+     ${ssh} -t -o PasswordAuthentication=no -o PubkeyAuthentication=yes -o StrictHostKeyChecking=no  student@${targetb} "echo student | sudo -S grep '^#PubkeyAuthentication yes$' /etc/ssh/sshd_config" &&
+     ${ssh} -t -o PasswordAuthentication=no -o PubkeyAuthentication=yes -o StrictHostKeyChecking=no  student@${targetb} "echo student | sudo -S systemctl reload sshd.service; sleep 10"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Deleting ${lab_user1} and ${lab_user2} from ${targeta}"
+  ${ssh} ${targeta} "pkill --signal SIGKILL -u ${lab_user1}; pkill --signal SIGKILL -u ${lab_user2}"
+  ${ssh} ${targeta} "userdel -r ${lab_user1}"
+  ${ssh} ${targeta} "userdel -r ${lab_user2}"
+  if ! ${ssh} ${targeta} "grep ${lab_user1} ${passwd} ${shadow}" &&
+     ! ${ssh} ${targeta} "grep ${lab_user2} ${passwd} ${shadow}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Deleting ${lab_user1} and ${lab_user2} from ${targetb}"
+  ${ssh} ${targetb} "pkill --signal SIGKILL -u ${lab_user1}; pkill --signal SIGKILL -u ${lab_user2}"
+  ${ssh} ${targetb} "userdel -r ${lab_user1}"
+  ${ssh} ${targetb} "userdel -r ${lab_user2}"
+  if ! ${ssh} ${targetb} "grep ${lab_user1} ${passwd} ${shadow}" &&
+     ! ${ssh} ${targetb} "grep ${lab_user2} ${passwd} ${shadow}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Removing temporary files of the exercise from ${targetb}"
+  if ${ssh} ${targetb} "rm -f /tmp/{md5sum_ssh_lab_config.txt,sshd_lab_config.orig}" &&
+     ! ${ssh} ${targetb} "test -e /tmp/md5sum_ssh_lab_config.txt" &&
+     ! ${ssh} ${targetb} "test -e /tmp/sshd_lab_config.orig"
+  then
+    print_SUCCESS
+  else
+    if ! ${ssh} ${targetb} "test -e /tmp/md5sum_ssh_lab_config.txt" &&
+       ! ${ssh} ${targetb} "test -e /tmp/sshd_lab_config.orig"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  pad " · Disabling sshpass on ${targeta}"
+  if ${ssh} ${targeta} "rm -f /etc/yum.repos.d/ansible.repo" &&
+     ${ssh} ${targeta} yum -y remove sshpass
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Disabling sshpass on ${target}"
+  if rm -f /etc/yum.repos.d/ansible.repo &&
+     yum -y remove sshpass
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  print_header 'Lab finished.'
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

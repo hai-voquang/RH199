@@ -1,0 +1,148 @@
+#!/bin/bash
+#
+# Copyright 2020 Red Hat, Inc.
+#
+# NAME
+#     lab-containers-api - grading script for demonstrating accessing Quay
+#                          through its API
+#
+# SYNOPSIS
+#     lab-containers-api {start|finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start or
+#     finish for the Quay API demonstration
+#
+# CHANGELOG
+#   * Wed Aug 19 2020 Herve Quatremain <hquatrem@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='utility'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start finish)
+
+
+function lab_start {
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} for lab exercise work:"
+  print_line
+  host_reachable ${target}
+
+  # Always check the status of Quay before using its API
+  rhel_containers_check_quay
+
+  pad " · Retrieving the OAuth token for Quay API"
+  local TOKEN=$(${ssh} utility cat /root/api.token)
+  print_SUCCESS
+
+  # The HEADER variable defines the HTTP header to send to the Quay API for
+  # authentication
+  local HEADER="Authorization: Bearer ${TOKEN}"
+
+
+  local ORG=ubi8
+  # Check if the organization already exists and only create it if not.
+  # The URL, utility.lab.example.com, can be used instead of
+  # registry.lab.example.com which is an alias for utility.
+  if ! curl -k -f -X GET -H "${HEADER}" https://utility.lab.example.com/api/v1/organization/${ORG}
+  then
+    pad " · Creating the Quay ${ORG} organization"
+
+    curl -k -f -X POST -d "{\"name\":\"${ORG}\"}" -H "${HEADER}" \
+         -H "Content-Type: application/json" \
+         https://utility.lab.example.com/api/v1/organization/
+    if [ $? -eq 0 ]
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  # Accessing Quay images with podman and skopeo requires an authentication.
+  # Authentication credentials must be passed to every command with the --creds
+  # (podman) and --src-creds and --dest-creds (skopeo) options.
+  # You cannot use "podman login" because credentials set this way are lost
+  # at the end of the SSH session.
+  # Login: admin, password: redhat321
+  #
+  # When using podman or skopeo, do it from utility where you are sure that
+  # the tools are already installed and configured.
+  pad " · Copying the rhel8/mariadb-103 image to ubi8/mymariadb"
+  if ${ssh} utility skopeo copy --src-creds admin:redhat321 \
+                                --dest-creds admin:redhat321 \
+                        docker://registry.lab.example.com/rhel8/mariadb-103 \
+                        docker://registry.lab.example.com/ubi8/mymariadb
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  # New images are private by default and cannot be searched.
+  pad " · Making the ubi8/mymariadb image public"
+  curl -k -f -X POST -d '{"visibility":"public"}' -H "${HEADER}" \
+       -H "Content-Type: application/json" \
+       https://utility.lab.example.com/api/v1/repository/ubi8/mymariadb/changevisibility
+  if [ $? -eq 0 ]
+  then
+    print_SUCCESS
+  else
+     print_FAIL
+  fi
+
+  print_line
+}
+
+function lab_finish {
+
+  print_header "Cleaning up the lab on ${target}:"
+  host_reachable ${target}
+
+  # Always check the status of Quay before using its API
+  rhel_containers_check_quay
+
+  pad " · Retrieving the OAuth token for Quay API"
+  local TOKEN=$(${ssh} utility cat /root/api.token)
+  local HEADER="Authorization: Bearer ${TOKEN}"
+  print_SUCCESS
+
+  local ORG=ubi8
+  # Only delete the organization if it exists.
+  # Deleting the organization also deletes its registries.
+  if curl -k -f -X GET -H "${HEADER}" https://utility.lab.example.com/api/v1/organization/${ORG}
+  then
+    pad " · Deleting the Quay ${ORG} organization"
+    curl -k -f -X DELETE -H "${HEADER}" \
+         https://utility.lab.example.com/api/v1/organization/${ORG}
+    if [ $? -eq 0 ]
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

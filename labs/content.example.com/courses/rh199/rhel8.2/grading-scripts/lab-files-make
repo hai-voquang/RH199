@@ -1,0 +1,106 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-files-make  - grading script for RH124 Guided Exercise
+#                       Making Links Between Files
+#
+# SYNOPSIS
+#     lab-files-make {start|finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start,
+#     or finish for the Making Links Between Files Guided Exercise.
+#
+# CHANGELOG
+#   * Tue Mar 05 2019 Victor Costea <vcostea@redhat.com>
+#   - update to use student home directory files
+#   * Thu Jan 24 2019 Victor Costea <vcostea@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='servera'
+workdir='files'
+backups_dir='backups'
+src_file='source.file'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start finish)
+
+function lab_start {
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} for lab exercise work:"
+  print_line
+
+  if host_reachable ${target}; then
+    pad " · Create working directory"
+    mk_workdir="mkdir /home/student/${workdir}"
+    if ${ssh} ${target} [[ -d /home/student/${workdir} ]]; then
+      print_SUCCESS
+    elif ${ssh} ${target} ${mk_workdir}; then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Create backups directory"
+    mk_backups_dir="mkdir /home/student/${backups_dir}"
+    if ${ssh} ${target} [[ -d /home/student/${backups_dir} ]]; then
+      print_SUCCESS
+    elif ${ssh} ${target} ${mk_backups_dir}; then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Create source file"
+    create_src_file="echo SourceFile > /home/student/${workdir}/${src_file}"
+    chown_cmd="chown -R student.student /home/student/${workdir} /home/student/${backups_dir}"
+    if ${ssh} ${target} ${create_src_file}; then
+      ${ssh} ${target} ${chown_cmd}
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  else
+    print_FAIL
+  fi
+
+  print_line
+}
+
+function lab_finish {
+
+  print_header "You have completed attempting the guided exercise."
+
+  pad " · Checking ${target}."
+  host_reachable ${target}
+  print_SUCCESS
+
+  pad " · Removing exercise content from ${target}."
+  rm_content='rm -rf /home/student/{backups,files,tempdir}'
+  ${ssh} ${target} "${rm_content}" &> /dev/null
+  print_SUCCESS
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

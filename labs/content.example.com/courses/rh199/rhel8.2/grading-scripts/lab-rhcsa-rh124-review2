@@ -1,0 +1,391 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-rhcsa-rh124-review2 - grading script for RH124 Comprehensive Review Managing Users and Groups, Permissions and Processes
+#
+#
+# SYNOPSIS
+#     lab-rhcsa-rh124-review2 {start|grade|finish}
+#
+#        start   - prepare the system for starting the lab
+#	       grade   - perform evaluation steps on the system
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start
+#     or finish for the Comprehensive Review Managing Users and Groups,
+#     Permissions and Processes
+#
+# CHANGELOG
+#   * Thu Mar 07 2019 Saumik Paul <saumik@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='workstation'
+targetb='serverb'
+comp_review2_user='dbuser1'
+comp_review2_group='database'
+comp_review2_home='/home/student'
+comp_review2_grading="${comp_review2_home}/grading"
+content_rhel_ver='rhel8.2'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start grade finish)
+
+
+function lab_start {
+
+  reqd_package='coreutils'        # Just an example
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${targetb} for lab exercise work:"
+  print_line
+  host_reachable ${targetb}
+
+
+  # Check for lab prerequisites (perhaps a required package?).
+  if ! ${ssh} ${targetb} "rpm -q --quiet ${reqd_package}"
+  then
+    pad " · Error - ${reqd_package} is not installed on ${targetb}"
+    print_FAIL
+  else
+    pad " · Enabling sshpass on ${target}"
+    if "test -f /etc/yum.repos.d/ansible.repo" &&
+       "test -s /etc/yum.repos.d/ansible.repo"
+    then
+      if yum -y install sshpass
+      then
+        print_SUCCESS
+      else
+        print_FAIL
+      fi
+    else
+      cat > /tmp/ansible.repo << EOF
+[ansible-2.9-for-rhel-8-x86_64-rpms]
+baseurl = http://content.example.com/${content_rhel_ver}/x86_64/rhel8-additional/ansible-2.9-for-rhel-8-x86_64-rpms
+enabled = true
+gpgcheck = false
+name = Red Hat Enterprise Linux 8.0 Additional (dvd)
+EOF
+      if cp /tmp/ansible.repo /etc/yum.repos.d/ &&
+         rm -f /tmp/ansible.repo &&
+         yum -y install sshpass
+      then
+        print_SUCCESS
+      else
+        print_FAIL
+      fi
+    fi
+
+    pad " · Creating a CPU intensive process on ${targetb}"
+    if ! ${ssh} ${targetb} "ps -aux | grep 'dd if=/dev/zero of=/dev/null' | grep -v grep"
+    then
+      ${ssh} student@${targetb} "dd if=/dev/zero of=/dev/null" &
+      ${ssh} student@${targetb} "ps -aux" | grep 'dd if=/dev/zero of=/dev/null' | grep -v 'grep' | awk '{ print $2 }' > /tmp/dd-PID.txt
+      if ${ssh} student@${targetb} "ps -aux | grep 'dd if=/dev/zero of=/dev/null' | grep -v grep" &&
+	 [ -s /tmp/dd-PID.txt ]
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    else
+      ${ssh} student@${targetb} "pkill dd" &&
+      ${ssh} student@${targetb} "dd if=/dev/zero of=/dev/null &"
+      ${ssh} student@${targetb} "ps -aux" | grep 'dd if=/dev/zero of=/dev/null' | grep -v 'grep' | awk '{ print $2 }' > /tmp/dd-PID.txt
+      if ${ssh} student@${targetb} "ps -aux | grep 'dd if=/dev/zero of=/dev/null' | grep -v grep" &&
+	 [ -s /tmp/dd-PID.txt ]
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    fi
+
+    pad " · Ensuring ${comp_review2_user} does not exist on ${targetb}"
+    if ! ${ssh} ${targetb} "getent passwd ${comp_review2_user}"
+    then
+      print_SUCCESS
+    else
+      if ${ssh} ${targetb} "userdel -r ${comp_review2_user}" &&
+         ! ${ssh} ${targetb} "getent passwd ${comp_review2_user}"
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    fi
+
+    pad " · Ensuring ${comp_review2_group} group does not exist on ${targetb}"
+    if ! ${ssh} ${targetb} "getent group ${comp_review2_group}"
+    then
+      print_SUCCESS
+    else
+      if ${ssh} ${targetb} "groupdel ${comp_review2_group}" &&
+         ! ${ssh} ${targetb} "getent group ${comp_review2_group}"
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    fi
+
+    pad " · Ensuring ${comp_review2_user} is not a sudoer on ${targetb}"
+    if ! ${ssh} ${targetb} "grep ${comp_review2_user} /etc/sudoers /etc/sudoers.d/*"
+    then
+      print_SUCCESS
+    else
+      ${ssh} ${targetb} "sed -i 's/^dbuser1.*//g' /etc/sudoers"
+      ${ssh} ${targetb} "sed -i '/^dbuser1.*/d' /etc/sudoers.d/*"
+      if ! ${ssh} ${targetb} "grep ${comp_review2_user} /etc/sudoers /etc/sudoers.d/*"
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    fi
+
+    pad " · Creating ${comp_review2_grading} on ${targetb}"
+    ${ssh} ${targetb} "mkdir ${comp_review2_grading}" &&
+    ${ssh} ${targetb} "chown -R student:student ${comp_review2_grading}"
+    if ${ssh} ${targetb} "test -d ${comp_review2_grading}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+
+    pad " · Backing up /etc/sudoers on ${targetb}"
+    if ! ${ssh} ${targetb} "grep ${comp_review2_user} /etc/sudoers"
+    then
+      ${ssh} ${targetb} "cp /etc/sudoers /tmp/sudoers_orig"
+      if ${ssh} ${targetb} "cmp /etc/sudoers /tmp/sudoers_orig"
+      then
+	print_SUCCESS
+      else
+	print_FAIL
+      fi
+    else
+      ${ssh} ${targetb} "sed -i '/^dbuser1.*/d' /etc/sudoers"
+      if ! ${ssh} ${targetb} "grep ${comp_review2_user} /etc/sudoers" &&
+	 ${ssh} ${targetb} "cp /etc/sudoers /tmp/sudoers_orig"
+      then
+        print_SUCCESS
+      else
+	print_FAIL
+      fi
+    fi
+
+    print_line
+  fi
+}
+
+function lab_grade {
+
+  print_header "Grading the student's work on ${targetb}:"
+  host_reachable ${targetb}
+
+  # Put in the steps to grade the lab (use print_PASS or print_FAIL)
+
+
+  pad " · Confirming termination of CPU intensive process on ${targetb}"
+  if ! ${ssh} ${targetb} "ps -aux | grep 'dd if=/dev/zero of=/dev/null' | grep -v grep" &&
+     [ -s /tmp/dd-PID.txt ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying if the ${comp_review2_group} group exists on ${targetb}"
+  if ${ssh} ${targetb} "getent group ${comp_review2_group} | grep 50000"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Verifying if ${comp_review2_user} belongs to ${comp_review2_group} group on ${targetb}"
+  if ${ssh} ${targetb} "groups ${comp_review2_user} | grep ${comp_review2_group}"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Evaluating password age ${comp_review2_user} on ${targetb}"
+  password_age_verify=$(${ssh} ${targetb} "getent shadow ${comp_review2_user}" | awk -F":" '{if($1 == "dbuser1" && $4 == "10" && $5 == "30") { print $1,$4,$5 }}')
+  if [ "${password_age_verify}" == "dbuser1 10 30" ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Evaluating the properties of review2 directory on ${targetb}"
+  if ${ssh} ${targetb} "ls -ld ${comp_review2_grading}/review2 | grep 'drwxrwsr-t'" &&
+     ${ssh} ${targetb} "ls -ld ${comp_review2_grading}/review2 | grep ${comp_review2_group}" &&
+     ${ssh} ${targetb} "ls -ld ${comp_review2_grading}/review2 | grep student"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Evaluating the sudo configuration of ${comp_review2_user} on ${targetb}"
+  if ${ssh} -t ${targetb} "echo redhat | passwd --stdin ${comp_review2_user}" &&
+     sshpass -predhat ${ssh} -t ${comp_review2_user}@${targetb} "echo redhat | sudo -S useradd sudo_test_review2" &&
+     sshpass -predhat ${ssh} -t ${comp_review2_user}@${targetb} "echo redhat | sudo -S userdel -r sudo_test_review2"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+
+  pad " · Evaluating the umask of ${comp_review2_user} on ${targetb}"
+  umask_verify=$(sshpass -predhat ${ssh} ${comp_review2_user}@${targetb} "umask")
+  if [ "${umask_verify}" == "0007" ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  # Overall grade
+  print_line
+  pad 'Overall lab grade'
+  if [[ ${fail_count} -eq 0 ]]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  print_line
+}
+
+
+
+function lab_finish {
+
+  print_header "Completing the lab on ${targetb}:"
+  host_reachable ${targetb}
+
+  reqd_package='coreutils'        # Just an example
+
+  pad " · Ensuring that the required environment is clean on ${targetb}"
+  if ${ssh} ${targetb} "rpm -q --quiet ${reqd_package}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Removing the CPU intensive process from ${targetb}"
+  if ${ssh} ${targetb} "ps -aux | grep 'dd if=/dev/zero of=/dev/null' | grep -v grep"
+  then
+    ${ssh} student@${targetb} "pkill dd"
+    rm -f /tmp/dd-PID.txt
+    if ! ${ssh} student@${targetb} "ps -aux | grep 'dd if=/dev/zero of=/dev/null' | grep -v grep" &&
+       ! [ -e /tmp/dd-PID.txt ]
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  else
+    if ! ${ssh} student@${targetb} "ps -aux | grep 'dd if=/dev/zero of=/dev/null' | grep -v grep" &&
+         rm -f /tmp/dd-PID.txt &&
+       ! [ -e /tmp/dd-PID.txt ]
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  pad " · Removing ${comp_review2_group} group from ${targetb}"
+  if ! ${ssh} ${targetb} "getent group ${comp_review2_group}"
+  then
+    print_SUCCESS
+  else
+    if ${ssh} ${targetb} "groupdel ${comp_review2_group}" &&
+       ! ${ssh} ${targetb} "getent group ${comp_review2_group}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  pad " · Removing ${comp_review2_user} from ${targetb}"
+  if ! ${ssh} ${targetb} "getent passwd ${comp_review2_user}"
+  then
+    print_SUCCESS
+  else
+    if ${ssh} ${targetb} "userdel -r ${comp_review2_user}" &&
+       ! ${ssh} ${targetb} "getent passwd ${comp_review2_user}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  pad " · Revoking sudo settings for ${comp_review2_user} on ${targetb}"
+  if ! ${ssh} ${targetb} "test -e /etc/sudoers.d/${comp_review2_user}" &&
+     ! ${ssh} ${targetb} "grep ${comp_review2_user} /etc/sudoers /etc/sudoers.d/*"
+  then
+    print_SUCCESS &&
+    ${ssh} ${targetb} "rm -f /tmp/sudoers_orig"
+  else
+    ${ssh} ${targetb} "cp -f /tmp/sudoers_orig /etc/sudoers"
+    ${ssh} ${targetb} "rm -rf /etc/sudoers.d/${comp_review2_user}"
+    ${ssh} ${targetb} "sed -i '/^dbuser1.*/d' /etc/sudoers.d/*"
+    if ! ${ssh} ${targetb} "grep ${comp_review2_user} /etc/sudoers /etc/sudoers.d/*"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+  pad " · Removing ${comp_review2_grading} recursively from ${targetb}"
+  ${ssh} ${targetb} "rm -rf ${comp_review2_grading}"
+  if ! ${ssh} ${targetb} "test -e ${comp_review2_grading}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Disabling sshpass on ${target}"
+  if rm -f /etc/yum.repos.d/ansible.repo &&
+     yum -y remove sshpass
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

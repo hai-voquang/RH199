@@ -1,0 +1,291 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-selinux-review - grading script for RH134 Managing SELinux Security
+#
+# SYNOPSIS
+#     lab-template {start|grade|finish}
+#
+#        start   - prepare the system for starting the lab
+#        grade   - perform evaluation steps on the system
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start, grading,
+#     or finish for the particular lab of awesomeness.
+#
+# CHANGELOG
+#   * Thu Mar 28 2019 Fiona Allen <fallen@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='serverb'
+reqd_package='httpd'
+directory='/lab-content'
+index='/lab-content/lab.html'
+conf='/etc/httpd/conf/httpd.conf' 
+conf_orig='/etc/httpd/conf/httpd.conf_orig'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start grade finish)
+
+
+function lab_start {
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing workstation for lab exercise work:"
+
+  pad " · Verifying that ${target} is running: "
+  if host_reachable ${target}
+   then
+     print_SUCCESS
+   else
+     print_FAIL
+  fi
+  
+  # Check that required package(s) is/are installed.
+  pad " · Ensuring package is installed: ${reqd_package}"
+  if  ${ssh} ${target} "rpm -q --quiet ${reqd_package}"
+  then
+    print_SUCCESS
+    elif  ${ssh} ${target} "yum -y install ${reqd_package}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+  fi
+
+  pad " · Setting firewall rules: "
+  if ${ssh} ${target} "firewall-cmd --zone=public --add-service=http --permanent"
+  then 
+    if ${ssh} ${target} "firewall-cmd --reload"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+# REFACTOR: Rewriting to run more than once
+#
+#  pad " · Creating directory ${directory}: "
+#  if ! ${ssh} ${target} [ -d ${directory} ]
+#  then
+#    if
+#     ${ssh} ${target} "mkdir ${directory}"
+#    then
+#      print_SUCCESS
+#    elif
+#      ${ssh} ${target} [ -d ${directory} ]
+#      then
+#        print_SUCCESS
+#    else
+#      print_FAIL
+#    fi
+#  fi
+
+  ## Rewritten
+  pad " · Creating directory ${directory}: "
+  if ! ${ssh} ${target} [ -d ${directory} ]
+  then
+    ${ssh} ${target} "mkdir ${directory}"
+    print_SUCCESS
+  elif ${ssh} ${target} [ -d ${directory} ]
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Creating file ${index}: "
+  if ${ssh} ${target} "echo 'This is the html file for the SELinux final lab on SERVERB.' > ${index}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Copying ${conf} file: "
+  if ${ssh} ${target} "cp -f ${conf} ${conf_orig}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Changing DocumentRoot to use ${directory}: "
+  if ${ssh} ${target} "sed -i -e 's/var\/www\/html/lab-content/g' ${conf}" &&
+     ${ssh} ${target} "systemctl restart httpd"
+      then
+        print_SUCCESS
+      else
+        print_FAIL
+  fi
+
+  print_line
+  host_reachable ${target}
+
+}
+
+function lab_grade {
+  
+  print_header "Grading the lab on ${target}:"
+
+# REFACTOR: Temporarily commenting: This is a default that will always pass
+#                                   and is not addressed during lab
+#
+#  pad " · Confirming SELinux is in enforcing mode: "
+#  if ${ssh} ${target} [ "$(getenforce)" = Enforcing ]
+#  then
+#    print_PASS
+#  else
+#    print_FAIL
+#  fi
+
+  pad " · Confirming files are in ${directory}: "
+  if ${ssh} ${target} [ -f "${index}" ]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Confirming the Apache DocumentRoot is unchanged: "
+  if ${ssh} ${target} grep -q "^DocumentRoot.*${directory}" /etc/httpd/conf/httpd.conf
+  then 
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Confirming the web content is accessible: "
+  CONTENT='This is the html file for the SELinux final lab on SERVERB.'
+  if curl -s --raw --url http://serverb/lab.html | grep -q "${CONTENT}"
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  # Overall grade
+  print_line
+  pad 'Overall lab grade'
+  if [[ ${fail_count} -eq 0 ]]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  print_line
+}
+
+
+function lab_finish {
+
+  print_header "Cleaning up the lab on ${target}:"
+  host_reachable ${target}
+
+  pad " · Cleaning up firewall rules: "
+  if ${ssh} ${target} "firewall-cmd --zone=public --remove-service=http --permanent"
+  then
+    if ${ssh} ${target} "firewall-cmd --reload"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  fi
+
+# REFACTOR: Rewriting to include the removal of /etc/httpd/conf directory
+#  
+#  pad " · Removing  ${reqd_package}: "
+#  if ! ${ssh} ${target} "rpm -q --quiet ${reqd_package}"
+#  then
+#    print_SUCCESS
+#    elif
+#      ${ssh} ${target} "yum -y remove ${reqd_package}"
+#      then
+#        print_SUCCESS
+#      else
+#        print_FAIL
+#   fi
+
+  ## Rewritten
+  pad " · Removing  ${reqd_package}: "
+  if ! ${ssh} ${target} "rpm -q --quiet ${reqd_package}"
+  then
+    print_SUCCESS
+    elif
+      ${ssh} ${target} "yum -y remove ${reqd_package}"
+      ${ssh} ${target} "rm -rf /etc/httpd/conf"
+      then
+        print_SUCCESS
+      else
+        print_FAIL
+   fi
+
+# REFACTOR: When httpd is removed the /etc/httpd/conf director
+#           can be deleted too. See above "Removing".
+#
+#   pad " · Moving ${conf_orig} to ${conf}: "
+#   if ${ssh} ${target} "cp -f ${conf_orig} ${conf}"
+#   then
+#     print_SUCCESS
+#   else
+#     print_FAIL
+#   fi
+#
+# REFACTOR: Modifiy the to survive multiple runs, no need to run restorcon, the directory gets removed
+#   pad " · Remove permit access to ${directory}: "
+#   if ${ssh} ${target} "semanage fcontext -d -t httpd_sys_content_t '${directory}(/.*)?'" &&
+#      ${ssh} ${target} "restorecon -Rv ${directory}"
+#   then
+#     print_SUCCESS
+#   else
+#     print_FAIL
+#   fi
+
+   pad " · Removing permit access to ${directory}: "
+   if ${ssh} ${target} "semanage fcontext -d -t httpd_sys_content_t '${directory}(/.*)?'"
+   then
+     print_SUCCESS
+   elif ! ${ssh} ${target} "semanage fcontext -d -t httpd_sys_content_t '${directory}(/.*)?'"
+   then
+     print_SUCCESS
+   else
+     print_FAIL
+   fi
+
+   pad " · Removing ${directory}: "
+   if ! ${ssh} ${target} " [ -d ${directory} ] "
+   then
+     print_SUCCESS
+     elif
+       ${ssh} ${target} "rm -rf ${directory}"
+       then
+         print_SUCCESS
+       else
+         print_FAIL
+   fi
+
+
+
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

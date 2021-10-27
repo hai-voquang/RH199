@@ -1,0 +1,246 @@
+#!/bin/bash
+#
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     lab-netsecurity-review - grading script for RH134 Lab
+#                              Managing Network Security
+#
+# SYNOPSIS
+#     lab-netsecurity-review {start|grade|finish}
+#
+#        start   - prepare the system for starting the lab
+#        grade   - perform evaluation steps on the system
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start, grading,
+#     or finish for the Managing Network Security Lab.
+#
+# CHANGELOG
+#   * Mon Apr 08 2019 Victor Costea <vcostea@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target='serverb'
+serverb_ip='172.25.250.11'
+http_pkg='httpd'
+vhost1='vhost1'
+vhost1_port='1001'
+vhost1_path="/var/www/${vhost1}"
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+declare -a valid_commands=(start grade finish)
+
+
+function lab_start {
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target} for lab exercise work:"
+  print_line
+
+  pad " · Checking ${target} connectivity"
+  host_reachable ${target}
+  print_SUCCESS
+
+  ## Install lab prerequisites packages.
+  pad " · Installing ${http_pkg} on ${target}"
+  if ! ${ssh} ${target} "rpm -q --quiet ${http_pkg}"
+  then
+    ${ssh} ${target} "yum -y install ${http_pkg}"
+    print_SUCCESS
+  elif ${ssh} ${target} "rpm -q --quiet ${http_pkg}"
+  then
+    print_SUCCESS
+  fi
+
+  ## Create virtual host document root directories
+  pad " · Creating virtual host directories on ${target}"
+  vhost_dirs="/var/www/vhost1"
+  if ${ssh} ${target} "mkdir -p ${vhost_dirs}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  ## Create vhost index.html files
+  pad " · Creating virtual host index.html files"
+  if ${ssh} ${target} "echo 'SERVER B' > /var/www/html/index.html" &&
+     ${ssh} ${target} "echo 'VHOST 1' > ${vhost1_path}/index.html"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  ## Add http service to firewall
+  pad " · Adding http service to the firewall"
+  if ${ssh} ${target} "firewall-cmd --zone=public --permanent --add-service=http"
+  then
+    ${ssh} ${target} "firewall-cmd --reload"
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  ## Create virtual hosts configuration file
+  pad ' · Creating the virtual-host.conf file'
+  cat > /tmp/virtual-hosts.conf << EOF
+Listen 1001
+
+<VirtualHost 172.25.250.11:80>
+    # This first-listed virtual host is also the default for *:80
+    ServerName serverb.lab.example.com
+    ServerAlias serverb
+    DocumentRoot "/var/www/html"
+</VirtualHost>
+
+<VirtualHost 172.25.250.11:1001>
+    ServerName vhost1
+    DocumentRoot "/var/www/vhost1"
+  <Directory /var/www/vhost1>
+    Require all granted
+  </Directory>
+</VirtualHost>
+EOF
+    print_SUCCESS
+
+  ## Copy virtual-host.conf to serverb /etc/httpd/conf.d directory
+  pad " · Copying virtual hosts file to ${target}"
+  if ${scp} /tmp/virtual-hosts.conf ${target}:/etc/httpd/conf.d/
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  print_line
+}
+
+function lab_grade {
+
+  print_header "Grading the student's work on ${target}:"
+  host_reachable ${target}
+
+  pad " · Checking access to default web server"
+  curddl_default_ws='curl http://serverb.lab.example.com'
+  if curl http://serverb.lab.example.com
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  pad " · Checking access to virtual host"
+  curl_vh='curl http://serverb.lab.example.com:1001'
+  if curl http://serverb.lab.example.com:1001
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  # Overall grade
+  print_line
+  pad 'Overall lab grade'
+  if [[ ${fail_count} -eq 0 ]]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  print_line
+}
+
+function lab_finish {
+
+  print_header "Cleaning up the lab on ${target}:"
+  host_reachable ${target}
+
+  pad " · Remove ${http_pkg} from ${target}"
+  if ${ssh} ${target} "rpm -q --quiet ${http_pkg}"
+  then
+    ${ssh} ${target} "yum remove -y ${http_pkg}"
+    print_SUCCESS
+  elif ! ${ssh} ${target} "rpm -q --quiet ${http_pkg}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+  ${ssh} ${target} "rm -rf /etc/httpd/conf.d/*.conf /etc/httpd/conf/*.conf"
+
+  pad " · Remove virtual host document root from ${target}"
+  if ${ssh} ${target} "ls ${vhost1_path}"
+  then
+    ${ssh} ${target} "rm -rf ${vhost1_path}"
+    print_SUCCESS
+  elif ! ${ssh} ${target} "ls ${vhost1_path}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+
+  pad " · Remove non-standard port from http_port_t type on ${target}"
+  rm_vhost1_seport="semanage port -d -t http_port_t -p tcp ${vhost1_port}"
+  if ${ssh} ${target} ${rm_vhost1_seport}
+  then
+    print_SUCCESS
+  elif ! ${ssh} ${target} ${rm_vhost1_seport}
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Remove non-standard port from firewall on ${target}"
+  get_vhost1_port="firewall-cmd --zone=public --list-ports | grep ${vhost1_port}/tcp"
+  rm_vhost1_port="firewall-cmd --zone=public --permanent --remove-port=${vhost1_port}/tcp"
+  if ${ssh} ${target} ${get_vhost1_port}
+  then
+    ${ssh} ${target} ${rm_vhost1_port}
+    ${ssh} ${target} "firewall-cmd --reload"
+    print_SUCCESS
+  elif ! ${ssh} ${target} ${get_vhost1_port}
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Remove http service from firewall on ${target}"
+  get_svc='firewall-cmd --zone=public --list-services | grep "http "'
+  rm_svc="firewall-cmd --zone=public --permanent --remove-service=http"
+  if ${ssh} ${target} "${get_svc}"
+  then
+    ${ssh} ${target} "${rm_svc}"
+    ${ssh} ${target} "firewall-cmd --reload"
+    print_SUCCESS
+  elif ! ${ssh} ${target} "${get_svc}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  print_line
+  print_line 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"

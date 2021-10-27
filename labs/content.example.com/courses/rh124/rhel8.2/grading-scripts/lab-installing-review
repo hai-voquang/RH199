@@ -1,0 +1,394 @@
+#!/bin/bash
+#
+# Copyright 2019, 2020 Red Hat, Inc.
+#
+# NAME
+#     lab-installing-review - grading script for RH134 Kickstarting Red Hat
+#                              Enterprise Linux guided exercise
+#
+# SYNOPSIS
+#     lab-installing-review {start|grade|finish}
+#
+#        start   - prepare the system for starting the lab
+#        finish  - perform post-lab cleanup
+#
+# DESCRIPTION
+#     This script, based on singular argument, either does start or finish for
+#     the Installing Red Hat Enterprise Linux guided exercise.
+#
+# CHANGELOG
+#   * Tue Aug 25 2020 Herve Quatremain <hquatrem@redhat.com>
+#   - fixing UEFI boot issues
+#   * Tue May 28 2019 Michael Phillips <miphilli@redhat.com>
+#   - added a check for the url line
+#   * Wed May 22 2019 Saumik Paul <saumik@redhat.com>
+#   - added a new grading conditional block to evaluate the authselect line
+#   - modified the finish function to be more robust
+#   * Thu Apr 04 2019 Marc Kesler <rkesler@redhat.com>
+#   - modified for use with kickstart lab
+#   * Tue Apr 02 2019 Herve Quatremain <hquatrem@redhat.com>
+#   - original code
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Initialize and set some variables
+run_as_root='true'
+target1='servera'
+target2='serverb'
+content_rhel_ver='rhel8.2'
+reqd_package1='pykickstart'
+reqd_package2='httpd'
+firewall_svc='http'
+web_svc='httpd'
+doc_dir='/var/www/html/ks-config'
+ks_file='kickstart.cfg'
+ks_url='http://serverb.lab.example.com/ks-config/kickstart.cfg'
+
+# This defines which subcommands are supported (start, grade, etc.).
+# Corresponding lab_COMMAND functions must be defined.
+
+# No finish script for this Guided Exercise.
+# Students must reset their system after manual installation.
+declare -a valid_commands=(start grade finish)
+
+
+function lab_start {
+
+  print_header 'Starting lab.'
+
+  print_line "Preparing ${target1} for lab exercise work:"
+  print_line
+  host_reachable ${target1}
+
+  rhel_backup ${target1} /boot/efi/EFI/redhat/grub.cfg /boot/efi/EFI/redhat/grubenv /etc/default/grub /boot/grub2/grub.cfg /boot/grub2/grubenv /etc/grub.d/40_custom /boot/loader
+
+  pad ' · Retrieving vmlinuz and initrd.img from DVD'
+  if ${ssh} ${target1} "wget -O /boot/vmlinuz  http://content/${content_rhel_ver}/x86_64/dvd/isolinux/vmlinuz"
+  then
+    if ${ssh} ${target1} "wget -O /boot/initrd.img  http://content/${content_rhel_ver}/x86_64/dvd/isolinux/initrd.img"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  else
+    print_FAIL
+  fi
+
+  pad " · Retrieving ${target1} network parameters"
+  ip=$(getent hosts servera | cut -d ' ' -f1)
+  netif=$(${ssh} ${target1} "ip -br -4 addr show" | grep ${ip} | cut -d ' ' -f1)
+  gateway=$(${ssh} ${target1} "ip route show" | grep default | cut -d ' ' -f3)
+  dns=$(${ssh} ${target1} "grep nameserver /etc/resolv.conf" | head -n 1 | cut -d ' ' -f2)
+  if [ -n "${ip}" -a -n ${netif} -a -n ${gateway} -a -n "${dns}" ]
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Creating a GRUB2 entry for installation on ${target1}"
+  ARGS=$(${ssh} ${target1} "grep ^GRUB_CMDLINE_LINUX= /etc/default/grub" | cut -d= -f2- | tr -d '"' | sed -e 's/console=[^ ]*//g')
+  ARGS="${ARGS} inst.ks=http://serverb.lab.example.com/ks-config/kickstart.cfg nameserver=${dns} ip=${ip}::${gateway}:255.255.255.0:localhost:${netif}:none"
+  if ${ssh} ${target1} "grubby --add-kernel=/boot/vmlinuz --initrd=/boot/initrd.img --title='Kickstart Red Hat Enterprise Linux 8' --args=\"${ARGS}\" --make-default"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Updating GRUB2 countdown and default entry on ${target1}"
+  ${ssh} ${target1} "sed -i -e 's/GRUB_TIMEOUT=.*/GRUB_TIMEOUT=59/' -e 's/GRUB_DEFAULT=.*/GRUB_DEFAULT=\"Kickstart Red Hat Enterprise Linux 8\"/' /etc/default/grub"
+  print_SUCCESS
+
+  rhel_grub2_mkconfig ${target1}
+
+  print_line
+  print_line "Checking ${target2} for lab exercise work:"
+  print_line
+
+  pad " · Check ${target2}"
+  host_reachable ${target2}
+  print_SUCCESS
+  print_line
+
+  print_line "Checking packages for lab exercise work:"
+  print_line
+
+  pad " · Ensuring package is installed: ${reqd_package1}"
+  if ${ssh} ${target2} "rpm -q --quiet ${reqd_package1}"
+    then
+      print_SUCCESS
+  elif ${ssh} ${target2} "yum -y install ${reqd_package1}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+  fi
+
+  pad " · Ensuring package is installed: ${reqd_package2}"
+  if ${ssh} ${target2} "rpm -q --quiet ${reqd_package2}"
+    then
+      print_SUCCESS
+  elif ${ssh} ${target2} "yum -y install ${reqd_package2}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+  fi
+
+  print_line
+
+  print_line "Configuring Apache for lab exercise work:"
+  print_line
+  ${ssh} ${target2} "systemctl enable ${web_svc} --now"
+  pad " · Starting service: ${web_svc}"
+  if ${ssh} ${target2} "systemctl is-active ${web_svc}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+  fi
+
+  ${ssh} ${target2} "mkdir -p ${doc_dir}"
+  pad " · Create directory: ${doc_dir}"
+  if ${ssh} ${target2} "ls -d ${doc_dir}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+  fi
+  ${ssh} ${target2} firewall-cmd --add-service=${firewall_svc} --permanent
+  ${ssh} ${target2} firewall-cmd --reload
+  pad " · Allow service in firewall: ${firewall_svc}"
+  if ${ssh} ${target2} "firewall-cmd --list-services | grep http"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+  fi
+  print_line
+}
+
+function lab_grade {
+
+  print_header "Grading the student's work on ${target2}:"
+  host_reachable ${target2}
+
+  pad " · Kickstart file available via http"
+  if curl -I ${ks_url} | grep "200 OK"
+  then
+	  print_PASS
+  else
+	  print_FAIL
+    print_line "Unable to find kickstart file"
+    exit 1
+  fi
+
+  pad " · reboot command commented"
+  TMP_OUT="$(mktemp)"
+  ${ssh} ${target2} "cat /var/www/html/ks-config/kickstart.cfg" > "${TMP_OUT}"
+  if grep -v ^\# "${TMP_OUT}" | grep -q ^reboot
+  then
+    print_FAIL
+  else
+    print_PASS
+  fi
+
+  pad " · BaseOS repo command commented"
+  if grep -v ^\# "${TMP_OUT}" | grep -q BaseOS
+  then
+	  print_FAIL
+  else
+	  print_PASS
+  fi
+
+  pad " · AppStream repo command modified"
+  if grep -q ^'repo --name=".*" --baseurl=http://classroom.example.com/content/.*/x86_64/dvd/AppStream/' "${TMP_OUT}"
+  then
+	  print_PASS
+  else
+	  print_FAIL
+  fi
+
+  pad " · url line modified"
+  if grep -q '^url --url="http://classroom.example.com/content/.*/x86_64/dvd/"' "${TMP_OUT}"
+  then
+	  print_PASS
+  else
+	  print_FAIL
+  fi
+
+  pad " · network command commented"
+  if grep -v ^\# "${TMP_OUT}" | grep -q ^network
+  then
+          print_FAIL
+  else
+          print_PASS
+  fi
+
+
+  pad " · rootpw command modified"
+  if grep -q ^'rootpw --plaintext redhat' "${TMP_OUT}"
+  then
+          print_PASS
+  else
+          print_FAIL
+  fi
+
+  pad " · authselect command added"
+  if grep -q ^'authselect select sssd' "${TMP_OUT}"
+  then
+          print_PASS
+  else
+          print_FAIL
+  fi
+
+  pad " · services command modified"
+  if grep -q ^'services --disabled="kdump,rhsmcertd" --enabled="sshd,rngd,chronyd"' "${TMP_OUT}"
+  then
+          print_PASS
+  else
+          print_FAIL
+  fi
+
+  pad " · reqpart command commented"
+  if grep -v ^\# "${TMP_OUT}" | grep -q ^reqpart
+  then
+          print_FAIL
+  else
+          print_PASS
+  fi
+
+  pad " · part command commented"
+  if grep -v ^\# "${TMP_OUT}" | grep -q ^part
+  then
+          print_FAIL
+  else
+          print_PASS
+  fi
+
+  pad " · autopart command added"
+  if grep -q ^'autopart' "${TMP_OUT}"
+  then
+          print_PASS
+  else
+          print_FAIL
+  fi
+
+
+  pad " · Post installation section modified"
+  if grep -A5 ^'%post' "${TMP_OUT}" | grep -q 'echo "Kickstarted on $(date)" >> /etc/issue'
+  then
+          print_PASS
+  else
+          print_FAIL
+  fi
+
+  pad " · Packages section modified"
+  if grep -A 13 ^'%packages' "${TMP_OUT}" | grep -e @core -e chrony -e dracut-config-generic -e dracut-norescue -e firewalld -e grub2 -e kernel -e rsync -e tar -e httpd -e '-plymouth'
+  then
+          print_PASS
+  else
+          print_FAIL
+  fi
+
+
+  rm -f "${TMP_OUT}"
+
+  # Overall grade
+  print_line
+  pad 'Overall lab grade'
+  if [[ ${fail_count} -eq 0 ]]
+  then
+    print_PASS
+  else
+    print_FAIL
+  fi
+
+  print_line
+
+}
+
+
+function lab_finish {
+
+  print_header 'Cleaning up lab environment.'
+
+  print_line "Removing lab work from ${target2}."
+  print_line
+
+  ${ssh} ${target2} firewall-cmd --remove-service=${firewall_svc} --permanent
+  ${ssh} ${target2} firewall-cmd --reload
+  pad " · Remove service from firewall: ${firewall_svc}"
+  if ${ssh} ${target2} "firewall-cmd --list-services | grep -v http"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+  fi
+
+  ${ssh} ${target2} "rm -rf  ${doc_dir}"
+  pad " · Remove directory: ${doc_dir}"
+  if ${ssh} ${target2} "ls -d ${doc_dir}"
+    then
+      print_FAIL
+    else
+      print_SUCCESS
+  fi
+
+  pad " · Ensuring package is removed: ${reqd_package1}"
+  if ${ssh} ${target2} "rpm -q --quiet ${reqd_package1}"
+  then
+    ${ssh} ${target2} "yum -y remove ${reqd_package1}"
+    if ! ${ssh} ${target2} "rpm -q --quiet ${reqd_package1}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  elif ! ${ssh} ${target2} "rpm -q --quiet ${reqd_package1}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  pad " · Ensuring package is removed: ${reqd_package2}"
+  if ${ssh} ${target2} "rpm -q --quiet ${reqd_package2}"
+  then
+    ${ssh} ${target2} "yum -y remove ${reqd_package2}"
+    if ! ${ssh} ${target2} "rpm -q --quiet ${reqd_package2}"
+    then
+      print_SUCCESS
+    else
+      print_FAIL
+    fi
+  elif ! ${ssh} ${target2} "rpm -q --quiet ${reqd_package2}"
+  then
+    print_SUCCESS
+  else
+    print_FAIL
+  fi
+
+  ${ssh} ${target2} "rm /home/student/kickstart.cfg"
+  pad " · Remove kickstart file: ${ks_file}"
+  if ${ssh} ${target2} "ls /home/student/${ks_file}"
+  then
+          print_FAIL
+  else
+          print_SUCCESS
+  fi
+
+  print_header "Reset the ${target1} system to return it to the default state."
+  print_header 'Lab finished.'
+  print_line
+}
+
+############### Don't EVER change anything below this line ###############
+
+# Source library of functions
+source /usr/local/lib/${function_lib}
+source /usr/local/lib/${platform_lib}
+
+grading_main_program "$@"
